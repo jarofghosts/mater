@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/granny-core", "crates/mater-plugin", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["jesse keane"]
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+
+# nih-plug's bundler builds the plugin with this profile for `--release`.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"

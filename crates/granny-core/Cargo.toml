@@ -1,0 +1,9 @@
+[package]
+name = "granny-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Port of the Bastl microGranny 2.5 granular sampler engine, polyphonic and microtonal"
+
+# Deliberately dependency-free: this crate is the DSP port and must stay trivially testable.
+[dependencies]

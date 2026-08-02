@@ -1,0 +1,667 @@
+//! The plugin's parameter surface.
+//!
+//! The eight knobs keep the hardware's raw integer ranges (0..=1023, 0..=127, 0..=255) so that
+//! automation lines up one-to-one with the instrument and so preset values are directly comparable
+//! with a real microGranny. Everything the hardware expresses through button combinations becomes
+//! an ordinary parameter, and a handful of parameters exist that the hardware has no way to offer
+//! at all: voice count, tuning, and the modulation matrix.
+
+use granny_core::curves::{grain_ms, shift_bytes, sync_end_ticks, sync_grain_ticks, CurveMode};
+use granny_core::dac::crush_mask;
+use granny_core::params::{ModDest, ModSource};
+use granny_core::sample::SampleBuffer;
+use granny_core::scala::ScalaTuning;
+use granny_core::tables::NATIVE_RATE;
+use granny_core::tuning::PitchTable;
+use nih_plug::params::persist::PersistentField;
+use nih_plug::prelude::*;
+use nih_plug_egui::EguiState;
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+use crate::loader::{LoadOptions, StoredSample, StoredScale};
+use crate::shared::{Shared, MAX_VOICES};
+
+/// A parameter's text-to-value callback, as nih-plug wants it.
+type StringToInt = Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>;
+
+/// Polyphonic modulation ids for the eight knobs, in [`granny_core::params::KNOB_RANGES`] order.
+pub const POLY_MOD_RATE: u32 = 0;
+pub const POLY_MOD_CRUSH: u32 = 1;
+pub const POLY_MOD_ATTACK: u32 = 2;
+pub const POLY_MOD_RELEASE: u32 = 3;
+pub const POLY_MOD_GRAIN: u32 = 4;
+pub const POLY_MOD_SHIFT: u32 = 5;
+pub const POLY_MOD_START: u32 = 6;
+pub const POLY_MOD_END: u32 = 7;
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum NoteMode {
+    /// The firmware's TUNED bit set: notes set the playback rate.
+    #[id = "pitch"]
+    #[name = "Pitch"]
+    Pitch,
+    /// TUNED clear: notes select one of 60 slices and the Rate knob sets the pitch.
+    #[id = "slice"]
+    #[name = "Slice"]
+    Slice,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PitchTableParam {
+    #[id = "hardware"]
+    #[name = "Hardware table"]
+    Hardware,
+    #[id = "et"]
+    #[name = "Equal temperament"]
+    EqualTemperament,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SnapMode {
+    #[id = "off"]
+    #[name = "Off"]
+    Off,
+    #[id = "edo24"]
+    #[name = "24-EDO (quarter tones)"]
+    Edo24,
+    #[id = "edo12"]
+    #[name = "12-EDO (semitones)"]
+    Edo12,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum CurveModeParam {
+    /// Reproduces the AVR's 16-bit overflow, so the shift curve folds back at the extremes.
+    #[id = "hardware"]
+    #[name = "Hardware (16-bit, folds)"]
+    Hardware,
+    #[id = "extended"]
+    #[name = "Extended (32-bit, smooth)"]
+    Extended,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum MpeZoneParam {
+    /// Plain MIDI: bend, pressure and CC74 apply to every voice.
+    #[id = "off"]
+    #[name = "Off (global)"]
+    Off,
+    #[id = "lower"]
+    #[name = "Lower zone (ch 2-16)"]
+    Lower,
+    #[id = "upper"]
+    #[name = "Upper zone (ch 15-1)"]
+    Upper,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ModSourceParam {
+    #[id = "none"]
+    #[name = "None"]
+    None,
+    #[id = "pressure"]
+    #[name = "Pressure"]
+    Pressure,
+    #[id = "slide"]
+    #[name = "Slide"]
+    Slide,
+    #[id = "velocity"]
+    #[name = "Velocity"]
+    Velocity,
+    #[id = "bend"]
+    #[name = "Bend"]
+    Bend,
+    #[id = "random"]
+    #[name = "Random"]
+    Random,
+}
+
+impl ModSourceParam {
+    pub fn to_core(self) -> ModSource {
+        match self {
+            ModSourceParam::None => ModSource::None,
+            ModSourceParam::Pressure => ModSource::Pressure,
+            ModSourceParam::Slide => ModSource::Slide,
+            ModSourceParam::Velocity => ModSource::Velocity,
+            ModSourceParam::Bend => ModSource::Bend,
+            ModSourceParam::Random => ModSource::Random,
+        }
+    }
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ModDestParam {
+    #[id = "none"]
+    #[name = "None"]
+    None,
+    #[id = "rate"]
+    #[name = "Rate"]
+    Rate,
+    #[id = "crush"]
+    #[name = "Crush"]
+    Crush,
+    #[id = "attack"]
+    #[name = "Attack"]
+    Attack,
+    #[id = "release"]
+    #[name = "Release"]
+    Release,
+    #[id = "grain"]
+    #[name = "Grain size"]
+    Grain,
+    #[id = "shift"]
+    #[name = "Shift"]
+    Shift,
+    #[id = "start"]
+    #[name = "Start"]
+    Start,
+    #[id = "end"]
+    #[name = "End"]
+    End,
+    #[id = "level"]
+    #[name = "Level"]
+    Level,
+    #[id = "pan"]
+    #[name = "Pan"]
+    Pan,
+}
+
+impl ModDestParam {
+    pub fn to_core(self) -> ModDest {
+        match self {
+            ModDestParam::None => ModDest::None,
+            ModDestParam::Rate => ModDest::Rate,
+            ModDestParam::Crush => ModDest::Crush,
+            ModDestParam::Attack => ModDest::Attack,
+            ModDestParam::Release => ModDest::Release,
+            ModDestParam::Grain => ModDest::Grain,
+            ModDestParam::Shift => ModDest::Shift,
+            ModDestParam::Start => ModDest::Start,
+            ModDestParam::End => ModDest::End,
+            ModDestParam::Level => ModDest::Level,
+            ModDestParam::Pan => ModDest::Pan,
+        }
+    }
+}
+
+/// One row of the modulation matrix.
+#[derive(Params)]
+pub struct ModRowParams {
+    #[id = "msrc"]
+    pub source: EnumParam<ModSourceParam>,
+    #[id = "mdst"]
+    pub dest: EnumParam<ModDestParam>,
+    #[id = "mamt"]
+    pub depth: FloatParam,
+}
+
+impl ModRowParams {
+    fn new(source: ModSourceParam, dest: ModDestParam, depth: f32) -> Self {
+        Self {
+            source: EnumParam::new("Source", source),
+            dest: EnumParam::new("Destination", dest),
+            depth: FloatParam::new(
+                "Depth",
+                depth,
+                FloatRange::Linear {
+                    min: -1.0,
+                    max: 1.0,
+                },
+            )
+            .with_step_size(0.01),
+        }
+    }
+}
+
+/// The sample, held in the plugin's state so an instance is a self-contained preset.
+///
+/// Implementing [`PersistentField`] by hand rather than storing a plain `Mutex` gives us the hook
+/// we need: when a host restores state, `set` fires and we can rebuild the audio buffer and hand it
+/// to the audio thread straight away.
+pub struct SampleSlot {
+    stored: Mutex<StoredSample>,
+    shared: Arc<Shared>,
+}
+
+impl SampleSlot {
+    pub fn new(shared: Arc<Shared>) -> Self {
+        Self {
+            stored: Mutex::new(StoredSample::default()),
+            shared,
+        }
+    }
+
+    /// Store a freshly loaded sample and publish it. Main thread only.
+    pub fn store(&self, sample: StoredSample) {
+        let buffer = Arc::new(sample.to_buffer());
+        *self.stored.lock() = sample;
+        self.shared.publish_sample(buffer);
+    }
+
+    pub fn path(&self) -> String {
+        self.stored.lock().path.clone()
+    }
+}
+
+impl<'a> PersistentField<'a, StoredSample> for SampleSlot {
+    fn set(&self, new_value: StoredSample) {
+        let buffer = Arc::new(new_value.to_buffer());
+        let summary = if new_value.is_empty() {
+            "No sample loaded".to_string()
+        } else {
+            format!(
+                "Restored {} ({} bytes)",
+                new_value.name,
+                new_value.data.len()
+            )
+        };
+        *self.stored.lock() = new_value;
+        self.shared.publish_sample(buffer);
+        self.shared.set_status(summary);
+    }
+
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&StoredSample) -> R,
+    {
+        f(&self.stored.lock())
+    }
+}
+
+/// The Scala scale and keyboard map, stored as their original text.
+pub struct ScaleSlot {
+    stored: Mutex<StoredScale>,
+    shared: Arc<Shared>,
+}
+
+impl ScaleSlot {
+    pub fn new(shared: Arc<Shared>) -> Self {
+        Self {
+            stored: Mutex::new(StoredScale::default()),
+            shared,
+        }
+    }
+
+    /// Replace the stored scale and publish the parsed result. Returns a message for the editor.
+    pub fn store(&self, scale: StoredScale) -> Result<(), String> {
+        let parsed = scale.to_tuning()?;
+        *self.stored.lock() = scale;
+        self.shared.publish_scala(parsed.map(Arc::new));
+        Ok(())
+    }
+
+    pub fn update(&self, edit: impl FnOnce(&mut StoredScale)) -> Result<(), String> {
+        let mut scale = self.stored.lock().clone();
+        edit(&mut scale);
+        self.store(scale)
+    }
+
+    pub fn snapshot(&self) -> StoredScale {
+        self.stored.lock().clone()
+    }
+}
+
+impl<'a> PersistentField<'a, StoredScale> for ScaleSlot {
+    fn set(&self, new_value: StoredScale) {
+        match new_value.to_tuning() {
+            Ok(parsed) => {
+                self.shared.publish_scala(parsed.map(Arc::new));
+                *self.stored.lock() = new_value;
+            }
+            Err(err) => self
+                .shared
+                .set_status(format!("Stored scale is invalid: {err}")),
+        }
+    }
+
+    fn map<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&StoredScale) -> R,
+    {
+        f(&self.stored.lock())
+    }
+}
+
+#[derive(Params)]
+pub struct MaterParams {
+    #[persist = "editor-state"]
+    pub editor_state: Arc<EguiState>,
+    #[persist = "sample"]
+    pub sample: SampleSlot,
+    #[persist = "scale"]
+    pub scale: ScaleSlot,
+
+    // --- the eight knobs ---
+    #[id = "rate"]
+    pub rate: IntParam,
+    #[id = "crush"]
+    pub crush: IntParam,
+    #[id = "attack"]
+    pub attack: IntParam,
+    #[id = "release"]
+    pub release: IntParam,
+    #[id = "grain"]
+    pub grain: IntParam,
+    #[id = "shift"]
+    pub shift: IntParam,
+    #[id = "start"]
+    pub start: IntParam,
+    #[id = "end"]
+    pub end: IntParam,
+
+    // --- the setting bits ---
+    #[id = "notemode"]
+    pub note_mode: EnumParam<NoteMode>,
+    #[id = "legato"]
+    pub legato: BoolParam,
+    #[id = "repeat"]
+    pub repeat: BoolParam,
+    #[id = "sync"]
+    pub sync: BoolParam,
+    #[id = "randshift"]
+    pub random_shift: BoolParam,
+
+    // --- converted from hardware UI gestures ---
+    #[id = "hold"]
+    pub hold: BoolParam,
+    #[id = "level"]
+    pub level: FloatParam,
+
+    // --- polyphony, tuning and expression: no hardware equivalent ---
+    #[id = "voices"]
+    pub voices: IntParam,
+    #[id = "pitchtbl"]
+    pub pitch_table: EnumParam<PitchTableParam>,
+    #[id = "snap"]
+    pub snap: EnumParam<SnapMode>,
+    #[id = "usescala"]
+    pub use_scala: BoolParam,
+    #[id = "matchpitch"]
+    pub match_input_pitch: BoolParam,
+    #[id = "rootadj"]
+    pub root_adjust: FloatParam,
+    #[id = "mpezone"]
+    pub mpe_zone: EnumParam<MpeZoneParam>,
+    #[id = "bendrng"]
+    pub bend_range: IntParam,
+    #[id = "bendrpn"]
+    pub follow_rpn: BoolParam,
+
+    // --- fidelity switches, all defaulting to the hardware's behaviour ---
+    #[id = "curve"]
+    pub curve_mode: EnumParam<CurveModeParam>,
+    #[id = "interp"]
+    pub interpolate: BoolParam,
+    #[id = "seekq"]
+    pub quantize_seeks: BoolParam,
+    #[id = "fade"]
+    pub grain_fade: FloatParam,
+
+    // --- load-time conditioning ---
+    #[id = "resample"]
+    pub resample_on_load: BoolParam,
+    #[id = "normlz"]
+    pub normalize_on_load: BoolParam,
+    #[id = "hwcc"]
+    pub hardware_cc: BoolParam,
+
+    #[nested(array, group = "Mod Matrix")]
+    pub mods: [ModRowParams; granny_core::params::MOD_SLOTS],
+}
+
+impl MaterParams {
+    pub fn new(shared: Arc<Shared>) -> Self {
+        Self {
+            editor_state: EguiState::from_size(960, 700),
+            sample: SampleSlot::new(shared.clone()),
+            scale: ScaleSlot::new(shared),
+
+            rate: IntParam::new("Rate", 877, IntRange::Linear { min: 0, max: 1023 })
+                .with_poly_modulation_id(POLY_MOD_RATE)
+                .with_value_to_string(Arc::new(|v| {
+                    let hz = granny_core::curves::value_to_sample_rate(v as u16, false);
+                    let semitones = 12.0 * (hz as f32 / NATIVE_RATE).log2();
+                    format!("{v} ({hz} Hz, {semitones:+.2} st)")
+                }))
+                .with_string_to_value(parse_leading_int()),
+            crush: IntParam::new("Crush", 0, IntRange::Linear { min: 0, max: 127 })
+                .with_poly_modulation_id(POLY_MOD_CRUSH)
+                .with_value_to_string(Arc::new(|v| {
+                    let mask = crush_mask(v as u16);
+                    // Every bit the mask sets is a bit of resolution the DAC word loses.
+                    let clean_bits = 12 - (16 - mask.leading_zeros()).min(12);
+                    format!("{v} (mask {mask}, {clean_bits} bit)")
+                }))
+                .with_string_to_value(parse_leading_int()),
+            attack: IntParam::new("Attack", 0, IntRange::Linear { min: 0, max: 127 })
+                .with_poly_modulation_id(POLY_MOD_ATTACK)
+                .with_value_to_string(Arc::new(|v| format!("{v} ms/step ({} ms)", envelope_ms(v))))
+                .with_string_to_value(parse_leading_int()),
+            release: IntParam::new("Release", 0, IntRange::Linear { min: 0, max: 127 })
+                .with_poly_modulation_id(POLY_MOD_RELEASE)
+                .with_value_to_string(Arc::new(|v| format!("{v} ms/step ({} ms)", envelope_ms(v))))
+                .with_string_to_value(parse_leading_int()),
+            grain: IntParam::new("Grain Size", 0, IntRange::Linear { min: 0, max: 127 })
+                .with_poly_modulation_id(POLY_MOD_GRAIN)
+                .with_value_to_string(Arc::new(|v| {
+                    if v == 0 {
+                        "0 (off)".to_string()
+                    } else {
+                        format!(
+                            "{v} ({} ms, {} ticks)",
+                            grain_ms(v as u16, CurveMode::HardwareExact),
+                            sync_grain_ticks(v as u16)
+                        )
+                    }
+                }))
+                .with_string_to_value(parse_leading_int()),
+            shift: IntParam::new("Shift", 128, IntRange::Linear { min: 0, max: 255 })
+                .with_poly_modulation_id(POLY_MOD_SHIFT)
+                .with_value_to_string(Arc::new(|v| {
+                    format!(
+                        "{v} ({:+} B/grain)",
+                        shift_bytes(v as u16, CurveMode::HardwareExact)
+                    )
+                }))
+                .with_string_to_value(parse_leading_int()),
+            start: IntParam::new("Start", 0, IntRange::Linear { min: 0, max: 1023 })
+                .with_poly_modulation_id(POLY_MOD_START)
+                .with_value_to_string(Arc::new(|v| format!("{v} ({:.1} %)", v as f32 / 10.23)))
+                .with_string_to_value(parse_leading_int()),
+            end: IntParam::new("End", 1022, IntRange::Linear { min: 0, max: 1023 })
+                .with_poly_modulation_id(POLY_MOD_END)
+                .with_value_to_string(Arc::new(|v| {
+                    if v >= 1000 {
+                        format!("{v} (end of sample)")
+                    } else {
+                        format!(
+                            "{v} ({:.1} %, {} ticks)",
+                            v as f32 / 10.23,
+                            sync_end_ticks(v as u16)
+                        )
+                    }
+                }))
+                .with_string_to_value(parse_leading_int()),
+
+            note_mode: EnumParam::new("Note Mode", NoteMode::Pitch),
+            legato: BoolParam::new("Legato", false),
+            repeat: BoolParam::new("Repeat", true),
+            sync: BoolParam::new("Sync", true),
+            random_shift: BoolParam::new("Random Shift", false),
+
+            hold: BoolParam::new("Hold", false),
+            level: FloatParam::new(
+                "Level",
+                util::db_to_gain(-6.0),
+                FloatRange::Skewed {
+                    min: 0.0,
+                    max: util::db_to_gain(6.0),
+                    factor: FloatRange::gain_skew_factor(-60.0, 6.0),
+                },
+            )
+            // Linear, not logarithmic: the range reaches zero so silence stays reachable.
+            .with_smoother(SmoothingStyle::Linear(10.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
+            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+
+            voices: IntParam::new(
+                "Voices",
+                MAX_VOICES as i32,
+                IntRange::Linear {
+                    min: 1,
+                    max: MAX_VOICES as i32,
+                },
+            ),
+            // Equal temperament by default: the hardware's own table is a rounded approximation,
+            // up to +10 cents sharp at the bottom, so it cannot track an incoming note exactly.
+            pitch_table: EnumParam::new("Pitch Table", PitchTableParam::EqualTemperament),
+            snap: EnumParam::new("Snap", SnapMode::Off),
+            use_scala: BoolParam::new("Use Scala Scale", false),
+            match_input_pitch: BoolParam::new("Match Input Pitch", true),
+            root_adjust: FloatParam::new(
+                "Root Adjust",
+                0.0,
+                FloatRange::Linear {
+                    min: -24.0,
+                    max: 24.0,
+                },
+            )
+            .with_step_size(0.01)
+            .with_unit(" st"),
+            mpe_zone: EnumParam::new("MPE", MpeZoneParam::Lower),
+            bend_range: IntParam::new("Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
+                .with_unit(" st"),
+            follow_rpn: BoolParam::new("Follow RPN 0", true),
+
+            curve_mode: EnumParam::new("Curve Maps", CurveModeParam::Hardware),
+            interpolate: BoolParam::new("Interpolate", false),
+            quantize_seeks: BoolParam::new("Block-Quantise Seeks", true),
+            grain_fade: FloatParam::new(
+                "Grain Fade",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 5.0 },
+            )
+            .with_step_size(0.1)
+            .with_unit(" ms"),
+
+            resample_on_load: BoolParam::new("Resample On Load", true),
+            normalize_on_load: BoolParam::new("Normalise On Load", true),
+            hardware_cc: BoolParam::new("Hardware CC Map", false),
+
+            mods: [
+                ModRowParams::new(ModSourceParam::Pressure, ModDestParam::Level, 0.6),
+                ModRowParams::new(ModSourceParam::Slide, ModDestParam::Start, 1.0),
+                ModRowParams::new(ModSourceParam::None, ModDestParam::None, 0.0),
+            ],
+        }
+    }
+
+    pub fn load_options(&self) -> LoadOptions {
+        LoadOptions {
+            resample: self.resample_on_load.value(),
+            normalize: self.normalize_on_load.value(),
+        }
+    }
+
+    pub fn pitch_table(&self) -> PitchTable {
+        match self.pitch_table.value() {
+            PitchTableParam::Hardware => PitchTable::Hardware,
+            PitchTableParam::EqualTemperament => PitchTable::EqualTemperament,
+        }
+    }
+
+    pub fn snap_divisions(&self) -> Option<u32> {
+        match self.snap.value() {
+            SnapMode::Off => None,
+            SnapMode::Edo24 => Some(24),
+            SnapMode::Edo12 => Some(12),
+        }
+    }
+
+    pub fn curve_mode(&self) -> CurveMode {
+        match self.curve_mode.value() {
+            CurveModeParam::Hardware => CurveMode::HardwareExact,
+            CurveModeParam::Extended => CurveMode::Extended,
+        }
+    }
+
+    /// The scale to use, if one is loaded and enabled.
+    pub fn active_scala(&self, loaded: &Option<Arc<ScalaTuning>>) -> Option<Arc<ScalaTuning>> {
+        if self.use_scala.value() {
+            loaded.clone()
+        } else {
+            None
+        }
+    }
+}
+
+/// Parse a knob's displayed text back to its raw value.
+///
+/// Every knob's display starts with the hardware's own raw number and puts the derived meaning in
+/// brackets after it. That keeps the round-trip exact, which matters because the hardware curves are
+/// not injective: several shift values map to the same byte count, so parsing the derived figure
+/// could not recover which one was meant.
+fn parse_leading_int() -> StringToInt {
+    Arc::new(|text| {
+        let trimmed = text.trim();
+        let digits: String = trimmed
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-' || *c == '+')
+            .collect();
+        digits
+            .parse::<i32>()
+            .ok()
+            // Fall back to a bare float so typing "50" or "50.0" also works.
+            .or_else(|| trimmed.parse::<f32>().ok().map(|v| v.round() as i32))
+    })
+}
+
+/// Approximate total envelope time for a step interval, matching `renderEnvelope`'s stepping.
+fn envelope_ms(interval: i32) -> i32 {
+    if interval == 0 {
+        return 0;
+    }
+    // 37 indices to cross, three at a time below 30 ms.
+    let steps = if interval < 30 { 13 } else { 37 };
+    interval * steps
+}
+
+/// A summary of the loaded sample for the editor's header.
+pub fn describe_sample(sample: &SampleBuffer) -> String {
+    if sample.is_empty() {
+        "no sample".to_string()
+    } else {
+        format!(
+            "{} - {} bytes, {:.2} s at 22050 Hz",
+            sample.name,
+            sample.len(),
+            sample.len() as f32 / 22050.0
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_time_matches_the_step_counting() {
+        assert_eq!(envelope_ms(0), 0);
+        assert_eq!(envelope_ms(127), 127 * 37);
+        assert_eq!(
+            envelope_ms(29),
+            29 * 13,
+            "below 30 ms it moves three at a time"
+        );
+    }
+
+    #[test]
+    fn crush_display_counts_lost_bits() {
+        let mask = crush_mask(127);
+        assert_eq!(mask, 1016);
+        let clean = 12 - (16 - mask.leading_zeros()).min(12);
+        assert_eq!(clean, 2, "full crush leaves only the top two bits intact");
+    }
+}
