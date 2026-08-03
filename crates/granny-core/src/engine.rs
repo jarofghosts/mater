@@ -556,14 +556,15 @@ mod tests {
         let baseline = engine.voices()[0].rate_hz();
         assert_eq!(engine.voices()[1].rate_hz(), baseline);
 
-        // A full-scale bend on channel 1 only, with the default 48 semitone range.
-        engine.for_each_matching(None, Some(1), None, |expression| expression.bend = 0.25);
+        // An octave of bend on channel 1 only.
+        engine.for_each_matching(None, Some(1), None, |expression| {
+            expression.bend_semitones = 12.0
+        });
         render(&mut engine, &fixture, 480);
 
         let bent = engine.voices()[0].rate_hz();
         let untouched = engine.voices()[1].rate_hz();
         assert_eq!(untouched, baseline, "the other channel must not move");
-        // A quarter of 48 semitones is an octave.
         assert!(
             (bent / baseline - 2.0).abs() < 0.02,
             "expected an octave, got a ratio of {}",
@@ -584,8 +585,9 @@ mod tests {
         let unbent = engine.voices()[0].rate_hz();
 
         // 60 cents of bend: past the halfway point, so it snaps up to the quarter tone.
-        let bend = 0.6 / fixture.params.bend_range;
-        engine.for_each_matching(None, None, None, |expression| expression.bend = bend);
+        engine.for_each_matching(None, None, None, |expression| {
+            expression.bend_semitones = 0.6
+        });
         render(&mut engine, &fixture, 240);
         let bent = engine.voices()[0].rate_hz();
 
@@ -694,14 +696,16 @@ mod tests {
         let render_note = |bend: f32| {
             let mut engine = Engine::new(4, 48_000.0);
             engine.note_on(&fixture.scene(), key(60), 1.0, Expression::default());
-            engine.for_each_matching(None, None, None, |expression| expression.bend = bend);
+            engine.for_each_matching(None, None, None, |expression| {
+                expression.bend_semitones = bend
+            });
             let (left, _) = render(&mut engine, &fixture, 48_000);
             measure(&left, 48_000.0)
         };
 
         let plain = render_note(0.0);
-        // Half a semitone, through the default 48 semitone bend range.
-        let bent = render_note(0.5 / 48.0);
+        // Half a semitone: a quarter tone.
+        let bent = render_note(0.5);
         let cents = 1200.0 * (bent / plain).log2();
         assert!(
             (cents - 50.0).abs() < 10.0,

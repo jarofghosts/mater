@@ -22,10 +22,10 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: render <input.wav> <output.wav> [key=value ...]\n\n\
              knobs:    rate crush attack release grain shift start end\n\
-             settings: tuned legato repeat sync random hold level bend\n\
+             settings: tuned legato repeat sync random hold level\n\
              fidelity: curve=hardware|extended interp=0|1 quantize=0|1 fade=<ms>\n\
              tuning:   match=0|1 root=<midi note> table=et|hardware snap=<edo>\n\
-             playback: note=<n> chord=<n,n,n> velocity=<0..1> seconds=<s>"
+             playback: note=<n> chord=<n,n,n> velocity=<0..1> seconds=<s> bend=<semitones>"
         );
         return ExitCode::FAILURE;
     }
@@ -76,7 +76,6 @@ fn main() -> ExitCode {
         random_shift: opts.flag("random", false),
         hold: opts.flag("hold", false),
         level: opts.float("level", 0.5),
-        bend_range: opts.float("bend", 48.0),
     };
 
     let fidelity = Fidelity {
@@ -128,6 +127,12 @@ fn main() -> ExitCode {
     };
     let velocity = opts.float("velocity", 1.0);
     let seconds = opts.float("seconds", 4.0);
+    // Bend is given in semitones here. A host resolves a wheel position against a bend range
+    // before the engine ever sees it, so there is no range to configure offline.
+    let expression = Expression {
+        bend_semitones: opts.float("bend", 0.0),
+        ..Default::default()
+    };
 
     let mods = [ModSlot::default(); MOD_SLOTS];
     let scene = Scene {
@@ -149,7 +154,7 @@ fn main() -> ExitCode {
                 note: *note,
             },
             velocity,
-            Expression::default(),
+            expression.clone(),
         );
     }
 

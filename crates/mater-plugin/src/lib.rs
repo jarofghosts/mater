@@ -124,10 +124,6 @@ impl Mater {
 
             hold: p.hold.value(),
             level: p.level.smoothed.next(),
-            bend_range: match (p.follow_rpn.value(), self.mpe.rpn_bend_range) {
-                (true, Some(range)) => range,
-                _ => p.bend_range.value() as f32,
-            },
         }
     }
 
@@ -178,6 +174,7 @@ impl Mater {
     fn expression_for(&self, channel: u8) -> Expression {
         Expression {
             bend: self.mpe.bend_for(channel),
+            bend_semitones: self.mpe.bend_semitones_for(channel),
             pressure: self.mpe.pressure_for(channel),
             slide: self.mpe.slide_for(channel),
             ..Default::default()
@@ -308,17 +305,20 @@ impl Mater {
             NoteEvent::MidiPitchBend { channel, value, .. } => {
                 let target = self.mpe.set_bend(channel, value);
                 let bend = self.mpe.bend_for(channel);
+                let semitones = self.mpe.bend_semitones_for(channel);
                 match target {
                     Target::All => {
                         // Every voice takes its own channel's resolved bend, not this one's.
                         let mpe = self.mpe.clone();
                         self.engine.for_each_all(|channel, expression| {
-                            expression.bend = mpe.bend_for(channel)
+                            expression.bend = mpe.bend_for(channel);
+                            expression.bend_semitones = mpe.bend_semitones_for(channel);
                         });
                     }
-                    Target::Channel(_) => {
-                        self.apply_to_target(target, |expression| expression.bend = bend)
-                    }
+                    Target::Channel(_) => self.apply_to_target(target, |expression| {
+                        expression.bend = bend;
+                        expression.bend_semitones = semitones;
+                    }),
                 }
             }
             NoteEvent::MidiChannelPressure {
@@ -495,6 +495,11 @@ impl Plugin for Mater {
             context.set_current_voice_capacity(requested_voices as u32);
         }
         self.mpe.set_zone(self.params.mpe_zone.value());
+        self.mpe.set_ranges(
+            self.params.bend_range.value() as f32,
+            self.params.master_bend_range.value() as f32,
+            self.params.follow_rpn.value(),
+        );
 
         // Copy what we need out of the transport so `context` stays free for events.
         let (playing, ticks_per_sample, block_start_ticks) = {

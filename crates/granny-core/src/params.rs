@@ -60,8 +60,6 @@ pub struct HwParams {
     pub hold: bool,
     /// Output level applied to every voice.
     pub level: f32,
-    /// Pitch bend range in semitones. MPE's default is 48.
-    pub bend_range: f32,
 }
 
 impl Default for HwParams {
@@ -84,7 +82,6 @@ impl Default for HwParams {
             random_shift: false,
             hold: false,
             level: 0.5,
-            bend_range: 48.0,
         }
     }
 }
@@ -172,8 +169,15 @@ pub struct ModSlot {
 pub struct Expression {
     /// Pitch offset in semitones from a CLAP tuning note expression.
     pub note_tuning: f32,
-    /// Pitch bend, -1..1. Scaled by [`HwParams::bend_range`], and also a mod matrix source.
+    /// Pitch bend as the controller sent it, -1..1. A wheel position, not a pitch: this is the mod
+    /// matrix source, and it does not depend on any bend range.
     pub bend: f32,
+    /// What that bend is worth in semitones.
+    ///
+    /// Resolved by whatever fed the expression, because a bend range belongs to the MIDI layer:
+    /// MPE alone gives a member channel and its master ranges that differ by a factor of 24, so
+    /// there is no single range the engine could apply on their behalf.
+    pub bend_semitones: f32,
     pub pressure: f32,
     pub slide: f32,
     pub velocity: f32,
@@ -192,6 +196,7 @@ impl Default for Expression {
         Self {
             note_tuning: 0.0,
             bend: 0.0,
+            bend_semitones: 0.0,
             pressure: 0.0,
             slide: 0.0,
             velocity: 1.0,
@@ -205,8 +210,8 @@ impl Default for Expression {
 
 impl Expression {
     /// Total pitch offset in semitones from every per-voice pitch source.
-    pub fn pitch_offset(&self, bend_range: f32) -> f32 {
-        self.note_tuning + self.bend * bend_range
+    pub fn pitch_offset(&self) -> f32 {
+        self.note_tuning + self.bend_semitones
     }
 }
 
@@ -395,10 +400,12 @@ mod tests {
     fn pitch_offset_combines_bend_and_note_expression() {
         let e = Expression {
             note_tuning: 0.5,
+            bend_semitones: 12.0,
+            // The wheel position is the mod matrix's business, not the pitch's.
             bend: 0.25,
             ..Default::default()
         };
-        assert_eq!(e.pitch_offset(48.0), 0.5 + 12.0);
+        assert_eq!(e.pitch_offset(), 0.5 + 12.0);
     }
 
     #[test]

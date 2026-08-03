@@ -226,7 +226,7 @@ impl Voice {
             value_to_sample_rate(r.rate, false) as f32
         } else {
             let transpose = rate_transpose_semitones(r.rate);
-            let offset = self.expr.pitch_offset(ctx.params.bend_range) + transpose;
+            let offset = self.expr.pitch_offset() + transpose;
             match ctx.tuning.effective_note(self.key.note, offset) {
                 Some(note) => ctx.tuning.rate_hz(note),
                 // An unmapped key in a Scala keyboard map does not sound.

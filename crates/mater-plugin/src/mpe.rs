@@ -26,6 +26,16 @@ const CC_RPN_MSB: u8 = 101;
 
 const CHANNELS: usize = 16;
 
+/// MPE's member-channel default: a member channel bends by ±48 semitones.
+pub const DEFAULT_MEMBER_BEND_RANGE: f32 = 48.0;
+/// The ordinary MIDI default, which MPE keeps for the master channel: ±2 semitones.
+///
+/// This is also the right range with the zone off, because then the input is plain MIDI.
+pub const DEFAULT_MASTER_BEND_RANGE: f32 = 2.0;
+
+/// Floor on a bend range, so a range of zero cannot silently disable bend entirely.
+const MIN_RANGE: f32 = 0.01;
+
 #[derive(Clone, Debug)]
 pub struct MpeState {
     zone: MpeZoneParam,
@@ -35,8 +45,15 @@ pub struct MpeState {
     slide: [f32; CHANNELS],
     /// In-progress RPN selection per channel.
     rpn: [(u8, u8); CHANNELS],
-    /// Pitch bend range in semitones, once RPN 0 has been received.
-    pub rpn_bend_range: Option<f32>,
+    /// Bend range in semitones for member channels, from the parameter.
+    member_range: f32,
+    /// Bend range in semitones for the master channel, and for everything with the zone off.
+    master_range: f32,
+    /// Ranges reported by RPN 0, kept apart because the two channel classes are configured
+    /// independently — a controller announcing ±2 on its master says nothing about its members.
+    rpn_member_range: Option<f32>,
+    rpn_master_range: Option<f32>,
+    follow_rpn: bool,
 }
 
 impl Default for MpeState {
@@ -47,7 +64,11 @@ impl Default for MpeState {
             pressure: [0.0; CHANNELS],
             slide: [0.0; CHANNELS],
             rpn: [(0x7F, 0x7F); CHANNELS],
-            rpn_bend_range: None,
+            member_range: DEFAULT_MEMBER_BEND_RANGE,
+            master_range: DEFAULT_MASTER_BEND_RANGE,
+            rpn_member_range: None,
+            rpn_master_range: None,
+            follow_rpn: true,
         }
     }
 }
@@ -59,6 +80,41 @@ impl MpeState {
             self.bend = [0.0; CHANNELS];
             self.pressure = [0.0; CHANNELS];
             self.slide = [0.0; CHANNELS];
+            // Which channels are master has changed, so anything RPN said before was about a
+            // different set of channels.
+            self.rpn_member_range = None;
+            self.rpn_master_range = None;
+        }
+    }
+
+    /// Set the bend ranges the parameters ask for, and whether RPN 0 may override them.
+    pub fn set_ranges(&mut self, member: f32, master: f32, follow_rpn: bool) {
+        self.member_range = member.max(MIN_RANGE);
+        self.master_range = master.max(MIN_RANGE);
+        self.follow_rpn = follow_rpn;
+    }
+
+    /// Whether a channel's bend is measured against the master range.
+    ///
+    /// With the zone off there is no master channel — but there is no MPE either, so the input is
+    /// plain MIDI and the ordinary bend range is the one that applies.
+    fn uses_master_range(&self, channel: u8) -> bool {
+        self.zone == MpeZoneParam::Off || self.is_master(channel)
+    }
+
+    /// Bend range in semitones for member channels: MPE's wide per-note range.
+    pub fn member_bend_range(&self) -> f32 {
+        match (self.follow_rpn, self.rpn_member_range) {
+            (true, Some(range)) => range.max(MIN_RANGE),
+            _ => self.member_range,
+        }
+    }
+
+    /// Bend range in semitones for the master channel, and for plain MIDI with the zone off.
+    pub fn master_bend_range(&self) -> f32 {
+        match (self.follow_rpn, self.rpn_master_range) {
+            (true, Some(range)) => range.max(MIN_RANGE),
+            _ => self.master_range,
         }
     }
 
@@ -108,13 +164,29 @@ impl MpeState {
         self.target(channel)
     }
 
-    /// Effective bend for a voice on a channel: the zone master plus that channel's own bend.
+    /// Raw bend for a channel, -1..1, as the controller sent it. The mod matrix source.
     pub fn bend_for(&self, channel: u8) -> f32 {
-        let channel = channel as usize % CHANNELS;
-        match self.zone {
-            MpeZoneParam::Off => self.bend[channel],
-            _ if self.is_master(channel as u8) => self.bend[channel],
-            _ => (self.master(&self.bend, 0.0) + self.bend[channel]).clamp(-1.0, 1.0),
+        let index = channel as usize % CHANNELS;
+        if self.uses_master_range(index as u8) {
+            self.bend[index]
+        } else {
+            (self.master(&self.bend, 0.0) + self.bend[index]).clamp(-1.0, 1.0)
+        }
+    }
+
+    /// What a voice's bend is worth in semitones: the zone master plus that channel's own bend,
+    /// each against its own range.
+    ///
+    /// The two channel classes do not share a bend range, and resolving them together is the whole
+    /// point. Getting it wrong is not subtle: a quarter tone sent as a ±2 semitone bend, read as if
+    /// it were MPE's ±48, comes out exactly an octave away.
+    pub fn bend_semitones_for(&self, channel: u8) -> f32 {
+        let index = channel as usize % CHANNELS;
+        if self.uses_master_range(index as u8) {
+            self.bend[index] * self.master_bend_range()
+        } else {
+            self.master(&self.bend, 0.0) * self.master_bend_range()
+                + self.bend[index] * self.member_bend_range()
         }
     }
 
@@ -135,33 +207,50 @@ impl MpeState {
         }
     }
 
+    /// The RPN-reported range for whichever class a channel belongs to.
+    fn rpn_range(&self, channel: u8) -> Option<f32> {
+        if self.uses_master_range(channel) {
+            self.rpn_master_range
+        } else {
+            self.rpn_member_range
+        }
+    }
+
+    fn record_rpn_range(&mut self, channel: u8, range: f32) -> f32 {
+        if self.uses_master_range(channel) {
+            self.rpn_master_range = Some(range);
+        } else {
+            self.rpn_member_range = Some(range);
+        }
+        range
+    }
+
     /// Feed a control change to the RPN parser. Returns a new bend range when RPN 0 completes.
+    ///
+    /// The range applies to the class of channel it arrived on, not to everything: MPE configures
+    /// its master and its members separately, and they routinely differ by a factor of 24.
     ///
     /// `value` is nih-plug's normalised CC value.
     pub fn handle_rpn(&mut self, channel: u8, cc: u8, value: f32) -> Option<f32> {
-        let channel = channel as usize % CHANNELS;
+        let index = channel as usize % CHANNELS;
         let raw = (value * 127.0).round().clamp(0.0, 127.0) as u8;
 
         match cc {
             CC_RPN_MSB => {
-                self.rpn[channel].0 = raw;
+                self.rpn[index].0 = raw;
                 None
             }
             CC_RPN_LSB => {
-                self.rpn[channel].1 = raw;
+                self.rpn[index].1 = raw;
                 None
             }
-            CC_DATA_ENTRY_MSB if self.rpn[channel] == (0, 0) => {
+            CC_DATA_ENTRY_MSB if self.rpn[index] == (0, 0) => {
                 // RPN 0 is pitch bend sensitivity: MSB semitones, LSB cents.
-                let range = raw as f32;
-                self.rpn_bend_range = Some(range);
-                Some(range)
+                Some(self.record_rpn_range(channel, raw as f32))
             }
-            CC_DATA_ENTRY_LSB if self.rpn[channel] == (0, 0) => {
-                let semitones = self.rpn_bend_range.unwrap_or(2.0).trunc();
-                let range = semitones + raw as f32 / 100.0;
-                self.rpn_bend_range = Some(range);
-                Some(range)
+            CC_DATA_ENTRY_LSB if self.rpn[index] == (0, 0) => {
+                let semitones = self.rpn_range(channel).unwrap_or(2.0).trunc();
+                Some(self.record_rpn_range(channel, semitones + raw as f32 / 100.0))
             }
             _ => None,
         }
@@ -172,12 +261,43 @@ impl MpeState {
 mod tests {
     use super::*;
 
+    /// A quarter tone up — half a semitone — from a controller with the ordinary ±2 range, as
+    /// nih-plug reports it: 0..1 with 0.5 at rest.
+    const QUARTER_TONE_BEND: f32 = 0.5 + 0.5 * (0.5 / 2.0);
+
     #[test]
     fn with_the_zone_off_everything_is_global() {
         let mut mpe = MpeState::default();
         mpe.set_zone(MpeZoneParam::Off);
         assert_eq!(mpe.set_bend(5, 1.0), Target::All);
-        assert_eq!(mpe.bend_for(5), 1.0);
+        // Plain MIDI, so a full-scale bend is the ordinary two semitones.
+        assert!((mpe.bend_semitones_for(5) - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_quarter_tone_from_a_plain_midi_controller_is_a_quarter_tone() {
+        // The bug this guards: read against MPE's ±48 instead of the ordinary ±2, a quarter tone
+        // lands exactly an octave away, which is precisely what makes it easy to miss.
+        for zone in [MpeZoneParam::Off, MpeZoneParam::Lower] {
+            let mut mpe = MpeState::default();
+            mpe.set_zone(zone);
+            // Channel 0 is the master channel of the lower zone, and the only channel a
+            // single-channel controller ever uses.
+            mpe.set_bend(0, QUARTER_TONE_BEND);
+            let bent = mpe.bend_semitones_for(0);
+            assert!(
+                (bent - 0.5).abs() < 1e-3,
+                "{zone:?}: expected half a semitone, got {bent}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_channel_still_gets_the_full_mpe_range() {
+        let mut mpe = MpeState::default();
+        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_bend(3, 1.0);
+        assert!((mpe.bend_semitones_for(3) - 48.0).abs() < 1e-3);
     }
 
     #[test]
@@ -193,10 +313,11 @@ mod tests {
     fn master_channel_bend_reaches_everything_and_stacks() {
         let mut mpe = MpeState::default();
         mpe.set_zone(MpeZoneParam::Lower);
-        mpe.set_bend(2, 0.75); // member: +0.5
+        mpe.set_bend(2, 0.75); // member: +0.5 of 48 semitones
         assert_eq!(mpe.set_bend(0, 0.75), Target::All);
-        // Master +0.5 and member +0.5 combine.
-        assert_eq!(mpe.bend_for(2), 1.0);
+        // The two stack in semitones, not in normalised units: half of 48 from the member, half of
+        // the master's own 2 from the master.
+        assert!((mpe.bend_semitones_for(2) - 25.0).abs() < 1e-3);
     }
 
     #[test]
@@ -219,21 +340,45 @@ mod tests {
     #[test]
     fn rpn_zero_sets_the_bend_range() {
         let mut mpe = MpeState::default();
-        assert_eq!(mpe.handle_rpn(0, CC_RPN_MSB, 0.0), None);
-        assert_eq!(mpe.handle_rpn(0, CC_RPN_LSB, 0.0), None);
+        mpe.set_zone(MpeZoneParam::Lower);
+        assert_eq!(mpe.handle_rpn(1, CC_RPN_MSB, 0.0), None);
+        assert_eq!(mpe.handle_rpn(1, CC_RPN_LSB, 0.0), None);
         assert_eq!(
-            mpe.handle_rpn(0, CC_DATA_ENTRY_MSB, 48.0 / 127.0),
+            mpe.handle_rpn(1, CC_DATA_ENTRY_MSB, 48.0 / 127.0),
             Some(48.0)
         );
-        assert_eq!(mpe.rpn_bend_range, Some(48.0));
+        assert_eq!(mpe.member_bend_range(), 48.0);
+    }
+
+    #[test]
+    fn rpn_applies_to_the_channel_class_it_arrived_on() {
+        // A controller announcing ±2 on its master must not be taken to mean its members are ±2
+        // too; that is the same factor-of-24 error by another route.
+        let mut mpe = MpeState::default();
+        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.handle_rpn(0, CC_RPN_MSB, 0.0);
+        mpe.handle_rpn(0, CC_RPN_LSB, 0.0);
+        assert_eq!(mpe.handle_rpn(0, CC_DATA_ENTRY_MSB, 2.0 / 127.0), Some(2.0));
+        assert_eq!(mpe.master_bend_range(), 2.0);
+        assert_eq!(mpe.member_bend_range(), DEFAULT_MEMBER_BEND_RANGE);
+    }
+
+    #[test]
+    fn rpn_is_ignored_when_not_following_it() {
+        let mut mpe = MpeState::default();
+        mpe.set_ranges(24.0, 2.0, false);
+        mpe.handle_rpn(1, CC_RPN_MSB, 0.0);
+        mpe.handle_rpn(1, CC_RPN_LSB, 0.0);
+        mpe.handle_rpn(1, CC_DATA_ENTRY_MSB, 48.0 / 127.0);
+        assert_eq!(mpe.member_bend_range(), 24.0);
     }
 
     #[test]
     fn other_rpns_are_ignored() {
         let mut mpe = MpeState::default();
-        mpe.handle_rpn(0, CC_RPN_MSB, 0.0);
-        mpe.handle_rpn(0, CC_RPN_LSB, 1.0 / 127.0); // RPN 0,1 is fine tuning
-        assert_eq!(mpe.handle_rpn(0, CC_DATA_ENTRY_MSB, 1.0), None);
-        assert_eq!(mpe.rpn_bend_range, None);
+        mpe.handle_rpn(1, CC_RPN_MSB, 0.0);
+        mpe.handle_rpn(1, CC_RPN_LSB, 1.0 / 127.0); // RPN 0,1 is fine tuning
+        assert_eq!(mpe.handle_rpn(1, CC_DATA_ENTRY_MSB, 1.0), None);
+        assert_eq!(mpe.member_bend_range(), DEFAULT_MEMBER_BEND_RANGE);
     }
 }

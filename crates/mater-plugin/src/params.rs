@@ -385,6 +385,8 @@ pub struct MaterParams {
     pub mpe_zone: EnumParam<MpeZoneParam>,
     #[id = "bendrng"]
     pub bend_range: IntParam,
+    #[id = "mbendrng"]
+    pub master_bend_range: IntParam,
     #[id = "bendrpn"]
     pub follow_rpn: BoolParam,
 
@@ -531,8 +533,17 @@ impl MaterParams {
             .with_step_size(0.01)
             .with_unit(" st"),
             mpe_zone: EnumParam::new("mpe", MpeZoneParam::Lower),
-            bend_range: IntParam::new("bend range", 48, IntRange::Linear { min: 1, max: 96 })
+            // MPE's two defaults. Member channels get the wide range MPE reserves for them; the
+            // master channel — and plain MIDI, with the zone off — gets the ordinary ±2, because
+            // that is what an ordinary controller means by a full-scale bend.
+            bend_range: IntParam::new("mpe bend range", 48, IntRange::Linear { min: 1, max: 96 })
                 .with_unit(" st"),
+            master_bend_range: IntParam::new(
+                "midi bend range",
+                2,
+                IntRange::Linear { min: 1, max: 96 },
+            )
+            .with_unit(" st"),
             follow_rpn: BoolParam::new("follow rpn 0", true),
 
             curve_mode: EnumParam::new("curve maps", CurveModeParam::Hardware),

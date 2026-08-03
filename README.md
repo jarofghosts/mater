@@ -73,7 +73,9 @@ and are re-read every control tick, exactly as the firmware's `renderTweaking` d
 
 - **CLAP note expressions** — tuning, pressure, brightness, volume and pan, per voice.
 - **MPE** — lower or upper zone, or off for plain global MIDI. Per-channel bend, channel pressure
-  and CC74. Bend range follows RPN 0 when `Follow RPN 0` is on.
+  and CC74. Two bend ranges, as MPE specifies: `mpe bend range` (±48 by default) for member
+  channels, and `midi bend range` (±2) for the master channel and for plain MIDI with the zone off.
+  Either follows RPN 0 for its own class of channel when `Follow RPN 0` is on.
 - **Snap** — quantise the final pitch, after bend, to 24-EDO (quarter tones) or 12-EDO.
 - **Root** — everything above is relative to the detected sample root, so bends and scale steps are
   measured from a pitch that is actually correct.

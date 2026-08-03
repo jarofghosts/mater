@@ -408,7 +408,8 @@ fn tuning(
     });
     ui.horizontal_wrapped(|ui| {
         labelled(ui, "mpe", &params.mpe_zone, setter);
-        labelled(ui, "bend range", &params.bend_range, setter);
+        labelled(ui, "mpe bend range", &params.bend_range, setter);
+        labelled(ui, "midi bend range", &params.master_bend_range, setter);
         labelled(ui, "follow rpn 0", &params.follow_rpn, setter);
     });
 
