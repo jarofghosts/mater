@@ -48,7 +48,7 @@ impl Default for Shared {
             playheads: (0..MAX_VOICES)
                 .map(|_| AtomicF32::new(PLAYHEAD_IDLE))
                 .collect(),
-            status: Mutex::new("No sample loaded".into()),
+            status: Mutex::new("no sample loaded".into()),
         }
     }
 }

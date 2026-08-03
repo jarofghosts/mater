@@ -108,14 +108,13 @@ fn header(
     sample: &SampleBuffer,
 ) {
     ui.horizontal(|ui| {
-        ui.heading("Mater");
-        ui.label(egui::RichText::new("microGranny 2.5").weak());
+        ui.heading("mater");
         ui.separator();
 
-        if ui.button("Load sample…").clicked() {
+        if ui.button("load sample…").clicked() {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "Audio",
+                    "audio",
                     &["wav", "aiff", "aif", "flac", "mp3", "ogg", "m4a", "caf"],
                 )
                 .pick_file()
@@ -125,7 +124,7 @@ fn header(
         }
 
         let path = params.sample.path();
-        if !path.is_empty() && ui.button("Reload").clicked() {
+        if !path.is_empty() && ui.button("reload").clicked() {
             executor.execute_background(Task::LoadSample(path.into()));
         }
 
@@ -163,7 +162,7 @@ fn waveform(
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "no sample — click “Load sample…” or drop a file here",
+            "no sample — click “load sample…” or drop a file here",
             egui::FontId::proportional(15.0),
             visuals.weak_text_color(),
         );
@@ -240,7 +239,7 @@ fn waveform(
     }
 
     // Handles.
-    for (fraction, label) in [(start_fraction, "S"), (end_fraction, "E")] {
+    for (fraction, label) in [(start_fraction, "s"), (end_fraction, "e")] {
         let x = x_at(fraction);
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
@@ -311,18 +310,18 @@ fn labelled<'a>(ui: &mut egui::Ui, label: &str, param: &'a impl Param, setter: &
 }
 
 fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
-    ui.label(egui::RichText::new("Knobs").strong());
+    ui.label(egui::RichText::new("knobs").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Rate", &params.rate, setter);
-        labelled(ui, "Crush", &params.crush, setter);
-        labelled(ui, "Attack", &params.attack, setter);
-        labelled(ui, "Release", &params.release, setter);
+        labelled(ui, "rate", &params.rate, setter);
+        labelled(ui, "crush", &params.crush, setter);
+        labelled(ui, "attack", &params.attack, setter);
+        labelled(ui, "release", &params.release, setter);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Grain size", &params.grain, setter);
-        labelled(ui, "Shift", &params.shift, setter);
-        labelled(ui, "Start", &params.start, setter);
-        labelled(ui, "End", &params.end, setter);
+        labelled(ui, "grain size", &params.grain, setter);
+        labelled(ui, "shift", &params.shift, setter);
+        labelled(ui, "start", &params.start, setter);
+        labelled(ui, "end", &params.end, setter);
     });
 
     // The shift curve folds back on the hardware; say so where it is actually visible.
@@ -332,8 +331,8 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
     if hardware != extended {
         ui.label(
             egui::RichText::new(format!(
-                "shift {raw}: hardware curve gives {hardware:+} B/grain where the table implies \
-                 {extended:+} — the AVR's 16-bit multiply overflows here"
+                "shift {raw}: hardware curve gives {hardware:+} b/grain where the table implies \
+                 {extended:+} — the avr's 16-bit multiply overflows here"
             ))
             .weak()
             .italics(),
@@ -342,19 +341,19 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
 }
 
 fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
-    ui.label(egui::RichText::new("Settings").strong());
+    ui.label(egui::RichText::new("settings").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Note mode", &params.note_mode, setter);
-        labelled(ui, "Legato", &params.legato, setter);
-        labelled(ui, "Repeat", &params.repeat, setter);
-        labelled(ui, "Sync", &params.sync, setter);
-        labelled(ui, "Random shift", &params.random_shift, setter);
+        labelled(ui, "note mode", &params.note_mode, setter);
+        labelled(ui, "legato", &params.legato, setter);
+        labelled(ui, "repeat", &params.repeat, setter);
+        labelled(ui, "sync", &params.sync, setter);
+        labelled(ui, "random shift", &params.random_shift, setter);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Hold", &params.hold, setter);
-        labelled(ui, "Level", &params.level, setter);
-        labelled(ui, "Voices", &params.voices, setter);
-        labelled(ui, "Hardware CC map", &params.hardware_cc, setter);
+        labelled(ui, "hold", &params.hold, setter);
+        labelled(ui, "level", &params.level, setter);
+        labelled(ui, "voices", &params.voices, setter);
+        labelled(ui, "hardware cc map", &params.hardware_cc, setter);
     });
 }
 
@@ -365,7 +364,7 @@ fn root_summary(params: &Arc<MaterParams>, sample: &SampleBuffer) -> egui::RichT
     }
     if !params.match_input_pitch.value() {
         return egui::RichText::new(
-            "matching off — the sample plays at its recorded speed on B3, as the hardware does",
+            "matching off — the sample plays at its recorded speed on b3, as the hardware does",
         )
         .weak()
         .italics();
@@ -374,7 +373,7 @@ fn root_summary(params: &Arc<MaterParams>, sample: &SampleBuffer) -> egui::RichT
     let adjust = params.root_adjust.value();
     let text = match sample.detected_root() {
         Some(detection) => format!(
-            "detected {} at {:.1} Hz ({:.0} % confident) — playing that note gives back the \
+            "detected {} at {:.1} hz ({:.0} % confident) — playing that note gives back the \
              original pitch{}",
             describe_note(detection.note),
             detection.frequency,
@@ -386,7 +385,7 @@ fn root_summary(params: &Arc<MaterParams>, sample: &SampleBuffer) -> egui::RichT
             }
         ),
         None => format!(
-            "no clear pitch in this sample — rooted on {}, set Root adjust by ear",
+            "no clear pitch in this sample — rooted on {}, set root adjust by ear",
             describe_note(granny_core::tables::NATIVE_NOTE + adjust)
         ),
     };
@@ -400,40 +399,40 @@ fn tuning(
     executor: &AsyncExecutor<Mater>,
     sample: &SampleBuffer,
 ) {
-    ui.label(egui::RichText::new("Tuning").strong());
+    ui.label(egui::RichText::new("tuning").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Match input pitch", &params.match_input_pitch, setter);
-        labelled(ui, "Root adjust", &params.root_adjust, setter);
-        labelled(ui, "Pitch table", &params.pitch_table, setter);
-        labelled(ui, "Snap", &params.snap, setter);
+        labelled(ui, "match input pitch", &params.match_input_pitch, setter);
+        labelled(ui, "root adjust", &params.root_adjust, setter);
+        labelled(ui, "pitch table", &params.pitch_table, setter);
+        labelled(ui, "snap", &params.snap, setter);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "MPE", &params.mpe_zone, setter);
-        labelled(ui, "Bend range", &params.bend_range, setter);
-        labelled(ui, "Follow RPN 0", &params.follow_rpn, setter);
+        labelled(ui, "mpe", &params.mpe_zone, setter);
+        labelled(ui, "bend range", &params.bend_range, setter);
+        labelled(ui, "follow rpn 0", &params.follow_rpn, setter);
     });
 
     // What the sample was found to be, and therefore what playback is transposed from.
     ui.label(root_summary(params, sample));
 
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Load .scl…").clicked() {
+        if ui.button("load .scl…").clicked() {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Scala scale", &["scl"])
+                .add_filter("scala scale", &["scl"])
                 .pick_file()
             {
                 executor.execute_background(Task::LoadScl(path));
             }
         }
-        if ui.button("Load .kbm…").clicked() {
+        if ui.button("load .kbm…").clicked() {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Scala keyboard map", &["kbm"])
+                .add_filter("scala keyboard map", &["kbm"])
                 .pick_file()
             {
                 executor.execute_background(Task::LoadKbm(path));
             }
         }
-        if ui.button("Clear scale").clicked() {
+        if ui.button("clear scale").clicked() {
             executor.execute_background(Task::ClearScale);
         }
 
@@ -454,7 +453,7 @@ fn tuning(
 }
 
 fn mod_matrix(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
-    ui.label(egui::RichText::new("Mod matrix").strong());
+    ui.label(egui::RichText::new("mod matrix").strong());
     ui.label(
         egui::RichText::new("per-voice, applied on top of the knob values")
             .weak()
@@ -481,20 +480,20 @@ fn mod_matrix(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter
 }
 
 fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
-    ui.label(egui::RichText::new("Fidelity").strong());
+    ui.label(egui::RichText::new("fidelity").strong());
     ui.label(
         egui::RichText::new("defaults reproduce the hardware, including its rough edges")
             .weak()
             .italics(),
     );
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Curve maps", &params.curve_mode, setter);
-        labelled(ui, "Interpolate", &params.interpolate, setter);
-        labelled(ui, "Block-quantise seeks", &params.quantize_seeks, setter);
-        labelled(ui, "Grain fade", &params.grain_fade, setter);
+        labelled(ui, "curve maps", &params.curve_mode, setter);
+        labelled(ui, "interpolate", &params.interpolate, setter);
+        labelled(ui, "block-quantise seeks", &params.quantize_seeks, setter);
+        labelled(ui, "grain fade", &params.grain_fade, setter);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "Resample on load", &params.resample_on_load, setter);
-        labelled(ui, "Normalise on load", &params.normalize_on_load, setter);
+        labelled(ui, "resample on load", &params.resample_on_load, setter);
+        labelled(ui, "normalise on load", &params.normalize_on_load, setter);
     });
 }

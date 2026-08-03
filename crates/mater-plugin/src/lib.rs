@@ -386,8 +386,8 @@ impl Mater {
 }
 
 impl Plugin for Mater {
-    const NAME: &'static str = "Mater";
-    const VENDOR: &'static str = "jarofghosts";
+    const NAME: &'static str = "mater";
+    const VENDOR: &'static str = "grimoire.supply";
     const URL: &'static str = "https://github.com/jarofghosts/mater";
     const EMAIL: &'static str = "decapitron@gmail.com";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -416,11 +416,11 @@ impl Plugin for Mater {
         Box::new(move |task| match task {
             Task::LoadSample(path) => match loader::load_file(&path, params.load_options()) {
                 Ok(sample) => {
-                    let message = format!("Loaded {} ({} bytes)", sample.name, sample.data.len());
+                    let message = format!("loaded {} ({} bytes)", sample.name, sample.data.len());
                     params.sample.store(sample);
                     shared.set_status(message);
                 }
-                Err(err) => shared.set_status(format!("Could not load sample: {err}")),
+                Err(err) => shared.set_status(format!("could not load sample: {err}")),
             },
             Task::LoadScl(path) => match loader::load_text(&path) {
                 Ok((name, text)) => {
@@ -429,11 +429,11 @@ impl Plugin for Mater {
                         scale.scl = text;
                     });
                     match result {
-                        Ok(()) => shared.set_status(format!("Loaded scale {name}")),
-                        Err(err) => shared.set_status(format!("Bad scale: {err}")),
+                        Ok(()) => shared.set_status(format!("loaded scale {name}")),
+                        Err(err) => shared.set_status(format!("bad scale: {err}")),
                     }
                 }
-                Err(err) => shared.set_status(format!("Could not read scale: {err}")),
+                Err(err) => shared.set_status(format!("could not read scale: {err}")),
             },
             Task::LoadKbm(path) => match loader::load_text(&path) {
                 Ok((name, text)) => {
@@ -442,14 +442,14 @@ impl Plugin for Mater {
                         scale.kbm = text;
                     });
                     match result {
-                        Ok(()) => shared.set_status(format!("Loaded keyboard map {name}")),
-                        Err(err) => shared.set_status(format!("Bad keyboard map: {err}")),
+                        Ok(()) => shared.set_status(format!("loaded keyboard map {name}")),
+                        Err(err) => shared.set_status(format!("bad keyboard map: {err}")),
                     }
                 }
-                Err(err) => shared.set_status(format!("Could not read keyboard map: {err}")),
+                Err(err) => shared.set_status(format!("could not read keyboard map: {err}")),
             },
             Task::ClearScale => match params.scale.store(StoredScale::default()) {
-                Ok(()) => shared.set_status("Cleared Scala tuning"),
+                Ok(()) => shared.set_status("cleared scala tuning"),
                 Err(err) => shared.set_status(err),
             },
         })
@@ -598,9 +598,9 @@ impl Plugin for Mater {
 }
 
 impl ClapPlugin for Mater {
-    const CLAP_ID: &'static str = "com.jarofghosts.mater";
+    const CLAP_ID: &'static str = "supply.grimoire.mater";
     const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Polyphonic, MPE and microtonal port of the Bastl microGranny 2.5");
+        Some("polyphonic, mpe and microtonal granular sampler");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[

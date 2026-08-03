@@ -50,7 +50,7 @@ pub fn frequency_from_note(note: f32) -> f32 {
 /// Format a fractional note as a name and a cents offset, for display.
 pub fn describe_note(note: f32) -> String {
     const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        "c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b",
     ];
     let nearest = note.round();
     let cents = ((note - nearest) * 100.0).round() as i32;
@@ -318,10 +318,10 @@ mod tests {
 
     #[test]
     fn note_names_read_the_way_a_musician_expects() {
-        assert_eq!(describe_note(60.0), "C4");
-        assert_eq!(describe_note(69.0), "A4");
-        assert_eq!(describe_note(59.0), "B3");
-        assert_eq!(describe_note(60.25), "C4 +25 ¢");
-        assert_eq!(describe_note(59.9), "C4 -10 ¢");
+        assert_eq!(describe_note(60.0), "c4");
+        assert_eq!(describe_note(69.0), "a4");
+        assert_eq!(describe_note(59.0), "b3");
+        assert_eq!(describe_note(60.25), "c4 +25 ¢");
+        assert_eq!(describe_note(59.9), "c4 -10 ¢");
     }
 }
