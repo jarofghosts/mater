@@ -10,22 +10,60 @@ use granny_core::pitch::describe_note;
 use granny_core::sample::SampleBuffer;
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, egui, resizable_window::ResizableWindow, widgets};
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::params::{describe_sample, MaterParams};
+use crate::params::{describe_sample, MaterParams, UI_SCALES};
 use crate::shared::{Shared, PLAYHEAD_IDLE};
 use crate::{Mater, Task};
+
+/// The one accent colour: handles, playheads, filled sliders, anything switched on.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 146, 38);
+/// The same hue lifted, for hover and for text that has to stay legible on the accent.
+const ACCENT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(255, 187, 112);
+/// And dropped, for fills that sit behind text — slider bars, selected ranges.
+const ACCENT_FILL: egui::Color32 = egui::Color32::from_rgb(122, 60, 10);
 
 /// Fraction of the window the waveform gets, and the bounds it is held within.
 const WAVE_FRACTION: f32 = 0.4;
 const WAVE_MIN_HEIGHT: f32 = 160.0;
 const WAVE_MAX_HEIGHT: f32 = 360.0;
+/// However large the interface is drawn, the waveform never takes more of the window than this.
+const WAVE_HEIGHT_LIMIT: f32 = 0.55;
 /// How close to a handle the pointer must be to grab it.
 const HANDLE_GRAB_PX: f32 = 10.0;
 /// Width of one labelled parameter cell, so the rows line up into columns.
 const CELL_WIDTH: f32 = 190.0;
 const CELL_HEIGHT: f32 = 42.0;
+/// Height of the control inside a cell.
+const CONTROL_HEIGHT: f32 = 20.0;
+
+/// Every size the editor lays out by hand, multiplied by the current ui scale.
+///
+/// egui's own zoom factor is no use here: this integration hands egui a screen rect derived from
+/// the native scale alone, so changing the zoom would leave layout and rendering disagreeing. The
+/// style and these metrics carry the scaling instead, and a point stays a pixel.
+#[derive(Copy, Clone)]
+struct Metrics {
+    scale: f32,
+}
+
+impl Metrics {
+    /// A labelled parameter cell.
+    fn cell(self) -> egui::Vec2 {
+        egui::vec2(CELL_WIDTH * self.scale, CELL_HEIGHT * self.scale)
+    }
+
+    /// The control that sits inside one.
+    fn control(self) -> egui::Vec2 {
+        egui::vec2(CELL_WIDTH * self.scale, CONTROL_HEIGHT * self.scale)
+    }
+
+    fn at(self, points: f32) -> f32 {
+        points * self.scale
+    }
+}
 
 /// Which handle the pointer is currently dragging.
 #[derive(Copy, Clone, PartialEq, Eq, Default)]
@@ -39,6 +77,8 @@ enum Drag {
 #[derive(Default)]
 struct EditorState {
     drag: Drag,
+    /// The scale the style was last built for, so it is rebuilt only when it changes.
+    styled_for: Option<f32>,
 }
 
 pub fn create(
@@ -51,36 +91,110 @@ pub fn create(
     create_egui_editor(
         egui_state.clone(),
         EditorState::default(),
-        |_, _| {},
+        // A reopened window is a fresh context with egui's own style, so ask for ours again.
+        |_, state: &mut EditorState| state.styled_for = None,
         move |ctx, setter, state| {
             // Anything the audio thread displaced is dropped here, on the main thread.
             shared.collect_garbage();
             handle_dropped_files(ctx, &async_executor);
+
+            let scale = params.ui_scale();
+            if state.styled_for != Some(scale) {
+                apply_style(ctx, scale);
+                state.styled_for = Some(scale);
+            }
+            let metrics = Metrics { scale };
 
             ResizableWindow::new("mater")
                 .min_size(egui::Vec2::new(640.0, 480.0))
                 .show(ctx, egui_state.as_ref(), |ui| {
                     let sample = shared.editor_sample.lock().clone();
 
-                    header(ui, &params, &shared, &async_executor, &sample);
-                    ui.add_space(6.0);
-                    waveform(ui, &params, &shared, setter, state, &sample);
-                    ui.add_space(6.0);
+                    header(ui, &params, &shared, &async_executor, &sample, metrics);
+                    ui.add_space(metrics.at(6.0));
+                    waveform(ui, &params, &shared, setter, state, &sample, metrics);
+                    ui.add_space(metrics.at(6.0));
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        knobs(ui, &params, setter);
+                        knobs(ui, &params, setter, metrics);
                         ui.separator();
-                        settings(ui, &params, setter);
+                        settings(ui, &params, setter, metrics);
                         ui.separator();
-                        tuning(ui, &params, setter, &async_executor, &sample);
+                        tuning(ui, &params, setter, &async_executor, &sample, metrics);
                         ui.separator();
-                        mod_matrix(ui, &params, setter);
+                        mod_matrix(ui, &params, setter, metrics);
                         ui.separator();
-                        fidelity(ui, &params, setter);
+                        fidelity(ui, &params, setter, metrics);
                     });
                 });
         },
     )
+}
+
+/// Rebuild the style for a given scale.
+///
+/// Everything here is set from a constant rather than adjusted from what is already there, so
+/// applying it repeatedly cannot compound.
+fn apply_style(ctx: &egui::Context, scale: f32) {
+    ctx.all_styles_mut(|style| {
+        style.text_styles = text_styles(scale);
+        style.spacing = spacing(scale);
+        paint(&mut style.visuals, scale);
+    });
+}
+
+/// egui's default text styles, scaled.
+fn text_styles(scale: f32) -> BTreeMap<egui::TextStyle, egui::FontId> {
+    use egui::FontFamily::{Monospace, Proportional};
+    use egui::{FontId, TextStyle};
+
+    [
+        (TextStyle::Small, FontId::new(9.0 * scale, Proportional)),
+        (TextStyle::Body, FontId::new(12.5 * scale, Proportional)),
+        (TextStyle::Button, FontId::new(12.5 * scale, Proportional)),
+        (TextStyle::Heading, FontId::new(18.0 * scale, Proportional)),
+        (TextStyle::Monospace, FontId::new(12.0 * scale, Monospace)),
+    ]
+    .into()
+}
+
+/// egui's default spacing, scaled. The fields left alone are widths of things we do not use.
+fn spacing(scale: f32) -> egui::style::Spacing {
+    let base = egui::style::Spacing::default();
+    let margin = |margin: egui::Margin| egui::Margin::same((f32::from(margin.left) * scale) as i8);
+
+    egui::style::Spacing {
+        item_spacing: base.item_spacing * scale,
+        window_margin: margin(base.window_margin),
+        menu_margin: margin(base.menu_margin),
+        button_padding: base.button_padding * scale,
+        indent: base.indent * scale,
+        interact_size: base.interact_size * scale,
+        slider_width: base.slider_width * scale,
+        slider_rail_height: base.slider_rail_height * scale,
+        combo_width: base.combo_width * scale,
+        text_edit_width: base.text_edit_width * scale,
+        icon_width: base.icon_width * scale,
+        icon_width_inner: base.icon_width_inner * scale,
+        icon_spacing: base.icon_spacing * scale,
+        scroll: egui::style::ScrollStyle {
+            bar_width: base.scroll.bar_width * scale,
+            handle_min_length: base.scroll.handle_min_length * scale,
+            ..base.scroll
+        },
+        ..base
+    }
+}
+
+/// Repaint egui's blues — selection, links, the text cursor — in the accent orange.
+fn paint(visuals: &mut egui::Visuals, scale: f32) {
+    visuals.selection.bg_fill = ACCENT_FILL;
+    visuals.selection.stroke = egui::Stroke::new(scale, ACCENT_BRIGHT);
+    visuals.hyperlink_color = ACCENT;
+    visuals.text_cursor.stroke = egui::Stroke::new(2.0 * scale, ACCENT);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(scale, ACCENT);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(scale, ACCENT_BRIGHT);
+    visuals.resize_corner_size = 12.0 * scale;
 }
 
 fn handle_dropped_files(ctx: &egui::Context, executor: &AsyncExecutor<Mater>) {
@@ -106,6 +220,7 @@ fn header(
     shared: &Arc<Shared>,
     executor: &AsyncExecutor<Mater>,
     sample: &SampleBuffer,
+    metrics: Metrics,
 ) {
     ui.horizontal(|ui| {
         ui.heading("mater");
@@ -129,6 +244,10 @@ fn header(
         }
 
         ui.label(describe_sample(sample));
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            scale_control(ui, params, metrics);
+        });
     });
 
     ui.horizontal(|ui| {
@@ -139,6 +258,31 @@ fn header(
     });
 }
 
+/// How large the interface draws itself, in steps. Laid out right to left, so it reads
+/// `ui scale [−] 125 % [+]`.
+fn scale_control(ui: &mut egui::Ui, params: &Arc<MaterParams>, metrics: Metrics) {
+    let scale = metrics.scale;
+    // The nearest step, so a state saved by a future version with other steps still lands somewhere.
+    let step = UI_SCALES
+        .iter()
+        .position(|&candidate| candidate >= scale)
+        .unwrap_or(UI_SCALES.len() - 1);
+
+    let larger = ui.add_enabled(step + 1 < UI_SCALES.len(), egui::Button::new("+"));
+    if larger.clicked() {
+        params.set_ui_scale(UI_SCALES[step + 1]);
+    }
+
+    ui.label(egui::RichText::new(format!("{:.0} %", scale * 100.0)).monospace());
+
+    let smaller = ui.add_enabled(step > 0, egui::Button::new("−"));
+    if smaller.clicked() {
+        params.set_ui_scale(UI_SCALES[step - 1]);
+    }
+
+    ui.label(egui::RichText::new("ui scale").weak());
+}
+
 /// Draw the waveform, its handles, the grain window and every live playhead.
 fn waveform(
     ui: &mut egui::Ui,
@@ -147,8 +291,12 @@ fn waveform(
     setter: &ParamSetter,
     state: &mut EditorState,
     sample: &SampleBuffer,
+    metrics: Metrics,
 ) {
-    let height = (ui.available_height() * WAVE_FRACTION).clamp(WAVE_MIN_HEIGHT, WAVE_MAX_HEIGHT);
+    let available = ui.available_height();
+    let height = (available * WAVE_FRACTION)
+        .clamp(metrics.at(WAVE_MIN_HEIGHT), metrics.at(WAVE_MAX_HEIGHT))
+        .min(available * WAVE_HEIGHT_LIMIT);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
         egui::Sense::click_and_drag(),
@@ -163,7 +311,7 @@ fn waveform(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "no sample — click “load sample…” or drop a file here",
-            egui::FontId::proportional(15.0),
+            egui::FontId::proportional(metrics.at(15.0)),
             visuals.weak_text_color(),
         );
         return;
@@ -218,11 +366,7 @@ fn waveform(
             egui::pos2(loop_rect.left(), rect.top()),
             egui::vec2(width.max(2.0), rect.height()),
         );
-        painter.rect_filled(
-            grain_rect,
-            0.0,
-            visuals.selection.bg_fill.linear_multiply(0.25),
-        );
+        painter.rect_filled(grain_rect, 0.0, ACCENT.gamma_multiply(0.18));
     }
 
     // Playheads.
@@ -234,7 +378,7 @@ fn waveform(
         let x = x_at(position);
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(1.5, visuals.selection.bg_fill),
+            egui::Stroke::new(metrics.at(1.5), ACCENT),
         );
     }
 
@@ -243,14 +387,14 @@ fn waveform(
         let x = x_at(fraction);
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(2.0, visuals.hyperlink_color),
+            egui::Stroke::new(metrics.at(2.0), ACCENT_BRIGHT),
         );
         painter.text(
-            egui::pos2(x + 3.0, rect.top() + 2.0),
+            egui::pos2(x + metrics.at(3.0), rect.top() + metrics.at(2.0)),
             egui::Align2::LEFT_TOP,
             label,
-            egui::FontId::monospace(11.0),
-            visuals.hyperlink_color,
+            egui::FontId::monospace(metrics.at(11.0)),
+            ACCENT_BRIGHT,
         );
     }
 
@@ -259,7 +403,7 @@ fn waveform(
         if let Some(pointer) = response.interact_pointer_pos() {
             let to_start = (pointer.x - x_at(start_fraction)).abs();
             let to_end = (pointer.x - x_at(end_fraction)).abs();
-            state.drag = if to_start.min(to_end) > HANDLE_GRAB_PX {
+            state.drag = if to_start.min(to_end) > metrics.at(HANDLE_GRAB_PX) {
                 Drag::None
             } else if to_start <= to_end {
                 Drag::Start
@@ -297,31 +441,81 @@ fn waveform(
 }
 
 /// One parameter in a fixed-width cell, so wrapped rows line up as columns.
-fn labelled<'a>(ui: &mut egui::Ui, label: &str, param: &'a impl Param, setter: &'a ParamSetter) {
-    ui.allocate_ui(egui::vec2(CELL_WIDTH, CELL_HEIGHT), |ui| {
+fn labelled<'a>(
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &'a impl Param,
+    setter: &'a ParamSetter,
+    metrics: Metrics,
+) {
+    ui.allocate_ui(metrics.cell(), |ui| {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(label).small());
             ui.add_sized(
-                egui::vec2(CELL_WIDTH, 20.0),
+                metrics.control(),
                 widgets::ParamSlider::for_param(param, setter),
             );
         });
     });
 }
 
-fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
+/// A switch in the same cell shape as [`labelled`].
+///
+/// On and off are states, not values you slide between, so they get a checkbox — and the accent
+/// colour, so a row of them can be read at a glance.
+fn toggle(
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &BoolParam,
+    setter: &ParamSetter,
+    metrics: Metrics,
+) {
+    ui.allocate_ui(metrics.cell(), |ui| {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(label).small());
+
+            let mut value = param.value();
+            let response = ui
+                .allocate_ui_with_layout(
+                    metrics.control(),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        // A checkbox is narrow; the cell still has to hold its column's width.
+                        ui.set_min_size(metrics.control());
+                        if value {
+                            let widgets = &mut ui.visuals_mut().widgets;
+                            widgets.inactive.fg_stroke.color = ACCENT;
+                            widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
+                            widgets.active.fg_stroke.color = ACCENT_BRIGHT;
+                        }
+                        let text = if value { "on" } else { "off" };
+                        ui.add(egui::Checkbox::new(&mut value, text))
+                    },
+                )
+                .inner;
+
+            if response.changed() {
+                setter.begin_set_parameter(param);
+                setter.set_parameter(param, value);
+                setter.end_set_parameter(param);
+            }
+        });
+    });
+}
+
+fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("knobs").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "rate", &params.rate, setter);
-        labelled(ui, "crush", &params.crush, setter);
-        labelled(ui, "attack", &params.attack, setter);
-        labelled(ui, "release", &params.release, setter);
+        labelled(ui, "rate", &params.rate, setter, metrics);
+        labelled(ui, "crush", &params.crush, setter, metrics);
+        labelled(ui, "attack", &params.attack, setter, metrics);
+        labelled(ui, "release", &params.release, setter, metrics);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "grain size", &params.grain, setter);
-        labelled(ui, "shift", &params.shift, setter);
-        labelled(ui, "start", &params.start, setter);
-        labelled(ui, "end", &params.end, setter);
+        labelled(ui, "grain size", &params.grain, setter, metrics);
+        labelled(ui, "shift", &params.shift, setter, metrics);
+        labelled(ui, "start", &params.start, setter, metrics);
+        labelled(ui, "end", &params.end, setter, metrics);
     });
 
     // The shift curve folds back on the hardware; say so where it is actually visible.
@@ -340,20 +534,20 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
     }
 }
 
-fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
+fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("settings").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "note mode", &params.note_mode, setter);
-        labelled(ui, "legato", &params.legato, setter);
-        labelled(ui, "repeat", &params.repeat, setter);
-        labelled(ui, "sync", &params.sync, setter);
-        labelled(ui, "random shift", &params.random_shift, setter);
+        labelled(ui, "note mode", &params.note_mode, setter, metrics);
+        toggle(ui, "legato", &params.legato, setter, metrics);
+        toggle(ui, "repeat", &params.repeat, setter, metrics);
+        toggle(ui, "sync", &params.sync, setter, metrics);
+        toggle(ui, "random shift", &params.random_shift, setter, metrics);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "hold", &params.hold, setter);
-        labelled(ui, "level", &params.level, setter);
-        labelled(ui, "voices", &params.voices, setter);
-        labelled(ui, "hardware cc map", &params.hardware_cc, setter);
+        toggle(ui, "hold", &params.hold, setter, metrics);
+        labelled(ui, "level", &params.level, setter, metrics);
+        labelled(ui, "voices", &params.voices, setter, metrics);
+        toggle(ui, "hardware cc map", &params.hardware_cc, setter, metrics);
     });
 }
 
@@ -398,19 +592,32 @@ fn tuning(
     setter: &ParamSetter,
     executor: &AsyncExecutor<Mater>,
     sample: &SampleBuffer,
+    metrics: Metrics,
 ) {
     ui.label(egui::RichText::new("tuning").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "match input pitch", &params.match_input_pitch, setter);
-        labelled(ui, "root adjust", &params.root_adjust, setter);
-        labelled(ui, "pitch table", &params.pitch_table, setter);
-        labelled(ui, "snap", &params.snap, setter);
+        toggle(
+            ui,
+            "match input pitch",
+            &params.match_input_pitch,
+            setter,
+            metrics,
+        );
+        labelled(ui, "root adjust", &params.root_adjust, setter, metrics);
+        labelled(ui, "pitch table", &params.pitch_table, setter, metrics);
+        labelled(ui, "snap", &params.snap, setter, metrics);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "mpe", &params.mpe_zone, setter);
-        labelled(ui, "mpe bend range", &params.bend_range, setter);
-        labelled(ui, "midi bend range", &params.master_bend_range, setter);
-        labelled(ui, "follow rpn 0", &params.follow_rpn, setter);
+        labelled(ui, "mpe", &params.mpe_zone, setter, metrics);
+        labelled(ui, "mpe bend range", &params.bend_range, setter, metrics);
+        labelled(
+            ui,
+            "midi bend range",
+            &params.master_bend_range,
+            setter,
+            metrics,
+        );
+        toggle(ui, "follow rpn 0", &params.follow_rpn, setter, metrics);
     });
 
     // What the sample was found to be, and therefore what playback is transposed from.
@@ -446,14 +653,16 @@ fn tuning(
             format!("{} + {}", scale.scl_name, scale.kbm_name)
         };
         ui.label(description);
-        ui.add_sized(
-            egui::vec2(CELL_WIDTH, 20.0),
-            widgets::ParamSlider::for_param(&params.use_scala, setter),
-        );
+        toggle(ui, "use scala scale", &params.use_scala, setter, metrics);
     });
 }
 
-fn mod_matrix(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
+fn mod_matrix(
+    ui: &mut egui::Ui,
+    params: &Arc<MaterParams>,
+    setter: &ParamSetter,
+    metrics: Metrics,
+) {
     ui.label(egui::RichText::new("mod matrix").strong());
     ui.label(
         egui::RichText::new("per-voice, applied on top of the knob values")
@@ -464,23 +673,23 @@ fn mod_matrix(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("{}.", index + 1));
             ui.add_sized(
-                egui::vec2(CELL_WIDTH, 20.0),
+                metrics.control(),
                 widgets::ParamSlider::for_param(&row.source, setter),
             );
             ui.label("→");
             ui.add_sized(
-                egui::vec2(CELL_WIDTH, 20.0),
+                metrics.control(),
                 widgets::ParamSlider::for_param(&row.dest, setter),
             );
             ui.add_sized(
-                egui::vec2(CELL_WIDTH, 20.0),
+                metrics.control(),
                 widgets::ParamSlider::for_param(&row.depth, setter),
             );
         });
     }
 }
 
-fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) {
+fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("fidelity").strong());
     ui.label(
         egui::RichText::new("defaults reproduce the hardware, including its rough edges")
@@ -488,13 +697,31 @@ fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter) 
             .italics(),
     );
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "curve maps", &params.curve_mode, setter);
-        labelled(ui, "interpolate", &params.interpolate, setter);
-        labelled(ui, "block-quantise seeks", &params.quantize_seeks, setter);
-        labelled(ui, "grain fade", &params.grain_fade, setter);
+        labelled(ui, "curve maps", &params.curve_mode, setter, metrics);
+        toggle(ui, "interpolate", &params.interpolate, setter, metrics);
+        toggle(
+            ui,
+            "block-quantise seeks",
+            &params.quantize_seeks,
+            setter,
+            metrics,
+        );
+        labelled(ui, "grain fade", &params.grain_fade, setter, metrics);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "resample on load", &params.resample_on_load, setter);
-        labelled(ui, "normalise on load", &params.normalize_on_load, setter);
+        toggle(
+            ui,
+            "resample on load",
+            &params.resample_on_load,
+            setter,
+            metrics,
+        );
+        toggle(
+            ui,
+            "normalise on load",
+            &params.normalize_on_load,
+            setter,
+            metrics,
+        );
     });
 }

@@ -16,7 +16,7 @@ use granny_core::tuning::PitchTable;
 use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
 use crate::loader::{LoadOptions, StoredSample, StoredScale};
@@ -24,6 +24,10 @@ use crate::shared::{Shared, MAX_VOICES};
 
 /// A parameter's text-to-value callback, as nih-plug wants it.
 type StringToInt = Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>;
+
+/// The scale steps the editor offers, smallest first. A plugin window cannot resize itself, so the
+/// editor draws itself larger inside whatever window the host gives it and the corner does the rest.
+pub const UI_SCALES: [f32; 6] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5];
 
 /// Polyphonic modulation ids for the eight knobs, in [`granny_core::params::KNOB_RANGES`] order.
 pub const POLY_MOD_RATE: u32 = 0;
@@ -327,6 +331,10 @@ impl<'a> PersistentField<'a, StoredScale> for ScaleSlot {
 pub struct MaterParams {
     #[persist = "editor-state"]
     pub editor_state: Arc<EguiState>,
+    /// How much larger than its natural size the editor draws itself. A view setting rather than a
+    /// parameter — nothing automates how big the text is — but it is saved with the instance.
+    #[persist = "uiscale"]
+    pub ui_scale: RwLock<f32>,
     #[persist = "sample"]
     pub sample: SampleSlot,
     #[persist = "scale"]
@@ -416,6 +424,7 @@ impl MaterParams {
     pub fn new(shared: Arc<Shared>) -> Self {
         Self {
             editor_state: EguiState::from_size(960, 700),
+            ui_scale: RwLock::new(UI_SCALES[0]),
             sample: SampleSlot::new(shared.clone()),
             scale: ScaleSlot::new(shared),
 
@@ -567,6 +576,17 @@ impl MaterParams {
                 ModRowParams::new(ModSourceParam::None, ModDestParam::None, 0.0),
             ],
         }
+    }
+
+    /// The editor's scale, held inside the offered steps in case a restored state is out of range.
+    pub fn ui_scale(&self) -> f32 {
+        self.ui_scale
+            .read()
+            .clamp(UI_SCALES[0], UI_SCALES[UI_SCALES.len() - 1])
+    }
+
+    pub fn set_ui_scale(&self, scale: f32) {
+        *self.ui_scale.write() = scale;
     }
 
     pub fn load_options(&self) -> LoadOptions {

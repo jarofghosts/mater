@@ -107,6 +107,16 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 - The envelope steps through a 38-entry dB table on a millisecond clock, and velocity sets the
   sustain attenuation rather than scaling a multiplier.
 
+## The editor
+
+The waveform is the interface: drag the `s` and `e` handles to move the loop points, the shaded band
+at the loop start is one grain, and every sounding voice draws its own playhead. Anything that is
+simply on or off is a checkbox; everything with a range is a slider.
+
+A plugin window cannot resize itself, so **UI Scale** in the top right draws the whole interface
+larger in steps from 100 % to 250 %, and the bottom-right corner drags the window out to fit it. The
+scale is stored with the instance.
+
 ## Loading samples
 
 Click **Load sample…**, or drop an audio file (`.wav`, `.aiff`, `.flac`, `.mp3`, `.ogg`, mp4
