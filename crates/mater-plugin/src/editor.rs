@@ -38,6 +38,9 @@ const CELL_WIDTH: f32 = 190.0;
 const CELL_HEIGHT: f32 = 42.0;
 /// Height of the control inside a cell.
 const CONTROL_HEIGHT: f32 = 20.0;
+/// Room between the interface and the window's edges. The panel's own margin is no use: the
+/// resizable window hands its contents the full clip rect, which is outside that margin.
+const WINDOW_PADDING: f32 = 8.0;
 
 /// Every size the editor lays out by hand, multiplied by the current ui scale.
 ///
@@ -58,6 +61,11 @@ impl Metrics {
     /// The control that sits inside one.
     fn control(self) -> egui::Vec2 {
         egui::vec2(CELL_WIDTH * self.scale, CONTROL_HEIGHT * self.scale)
+    }
+
+    /// The gap held between the interface and the window's edges.
+    fn padding(self) -> egui::Margin {
+        egui::Margin::same(self.at(WINDOW_PADDING) as i8)
     }
 
     fn at(self, points: f32) -> f32 {
@@ -108,24 +116,28 @@ pub fn create(
             ResizableWindow::new("mater")
                 .min_size(egui::Vec2::new(640.0, 480.0))
                 .show(ctx, egui_state.as_ref(), |ui| {
-                    let sample = shared.editor_sample.lock().clone();
+                    egui::Frame::NONE
+                        .inner_margin(metrics.padding())
+                        .show(ui, |ui| {
+                            let sample = shared.editor_sample.lock().clone();
 
-                    header(ui, &params, &shared, &async_executor, &sample, metrics);
-                    ui.add_space(metrics.at(6.0));
-                    waveform(ui, &params, &shared, setter, state, &sample, metrics);
-                    ui.add_space(metrics.at(6.0));
+                            header(ui, &params, &shared, &async_executor, &sample, metrics);
+                            ui.add_space(metrics.at(6.0));
+                            waveform(ui, &params, &shared, setter, state, &sample, metrics);
+                            ui.add_space(metrics.at(6.0));
 
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        knobs(ui, &params, setter, metrics);
-                        ui.separator();
-                        settings(ui, &params, setter, metrics);
-                        ui.separator();
-                        tuning(ui, &params, setter, &async_executor, &sample, metrics);
-                        ui.separator();
-                        mod_matrix(ui, &params, setter, metrics);
-                        ui.separator();
-                        fidelity(ui, &params, setter, metrics);
-                    });
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                knobs(ui, &params, setter, metrics);
+                                ui.separator();
+                                settings(ui, &params, setter, metrics);
+                                ui.separator();
+                                tuning(ui, &params, setter, &async_executor, &sample, metrics);
+                                ui.separator();
+                                mod_matrix(ui, &params, setter, metrics);
+                                ui.separator();
+                                fidelity(ui, &params, setter, metrics);
+                            });
+                        });
                 });
         },
     )
