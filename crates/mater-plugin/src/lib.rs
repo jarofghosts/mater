@@ -17,6 +17,7 @@ mod editor;
 mod loader;
 mod mpe;
 mod params;
+mod project;
 mod shared;
 
 use loader::StoredScale;

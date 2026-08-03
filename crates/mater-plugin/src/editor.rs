@@ -11,10 +11,12 @@ use granny_core::sample::SampleBuffer;
 use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, egui, resizable_window::ResizableWindow, widgets};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::params::{describe_sample, MaterParams, UI_SCALES};
+use crate::project;
 use crate::shared::{Shared, PLAYHEAD_IDLE};
 use crate::{Mater, Task};
 
@@ -104,7 +106,7 @@ pub fn create(
         move |ctx, setter, state| {
             // Anything the audio thread displaced is dropped here, on the main thread.
             shared.collect_garbage();
-            handle_dropped_files(ctx, &async_executor);
+            handle_dropped_files(ctx, setter, &shared, &async_executor);
 
             let scale = params.ui_scale();
             if state.styled_for != Some(scale) {
@@ -121,7 +123,15 @@ pub fn create(
                         .show(ui, |ui| {
                             let sample = shared.editor_sample.lock().clone();
 
-                            header(ui, &params, &shared, &async_executor, &sample, metrics);
+                            header(
+                                ui,
+                                &params,
+                                &shared,
+                                setter,
+                                &async_executor,
+                                &sample,
+                                metrics,
+                            );
                             ui.add_space(metrics.at(6.0));
                             waveform(ui, &params, &shared, setter, state, &sample, metrics);
                             ui.add_space(metrics.at(6.0));
@@ -209,7 +219,12 @@ fn paint(visuals: &mut egui::Visuals, scale: f32) {
     visuals.resize_corner_size = 12.0 * scale;
 }
 
-fn handle_dropped_files(ctx: &egui::Context, executor: &AsyncExecutor<Mater>) {
+fn handle_dropped_files(
+    ctx: &egui::Context,
+    setter: &ParamSetter,
+    shared: &Arc<Shared>,
+    executor: &AsyncExecutor<Mater>,
+) {
     let dropped = ctx.input(|input| input.raw.dropped_files.clone());
     for file in dropped {
         let Some(path) = file.path else { continue };
@@ -221,21 +236,72 @@ fn handle_dropped_files(ctx: &egui::Context, executor: &AsyncExecutor<Mater>) {
         {
             Some("scl") => executor.execute_background(Task::LoadScl(path)),
             Some("kbm") => executor.execute_background(Task::LoadKbm(path)),
+            Some(project::EXTENSION) => load_project(&path, setter, shared),
             _ => executor.execute_background(Task::LoadSample(path)),
         }
     }
+}
+
+/// Write everything the plugin persists — the sample, the tuning, every parameter — to one file.
+fn save_project(path: &Path, setter: &ParamSetter, shared: &Arc<Shared>) {
+    let state = setter.raw_context.get_state();
+    match project::save(path, state) {
+        Ok(written) => shared.set_status(format!("saved project {}", file_label(&written))),
+        Err(err) => shared.set_status(format!("could not save project: {err}")),
+    }
+}
+
+/// Read one back and hand it to the wrapper, which restores every parameter and every persisted
+/// field and reinitialises the plugin — the same path a host takes when it reopens a project.
+fn load_project(path: &Path, setter: &ParamSetter, shared: &Arc<Shared>) {
+    match project::load(path) {
+        Ok(state) => {
+            let label = file_label(path);
+            // Restoring the sample writes a status of its own, so ours has to land after it.
+            setter.raw_context.set_state(state);
+            shared.set_status(format!("loaded project {label}"));
+        }
+        Err(err) => shared.set_status(format!("could not load project: {err}")),
+    }
+}
+
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project")
+        .to_string()
+}
+
+fn project_dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new().add_filter("mater project", &[project::EXTENSION])
 }
 
 fn header(
     ui: &mut egui::Ui,
     params: &Arc<MaterParams>,
     shared: &Arc<Shared>,
+    setter: &ParamSetter,
     executor: &AsyncExecutor<Mater>,
     sample: &SampleBuffer,
     metrics: Metrics,
 ) {
     ui.horizontal(|ui| {
         ui.heading("mater");
+        ui.separator();
+
+        if ui.button("save project…").clicked() {
+            if let Some(path) = project_dialog()
+                .set_file_name(project::default_file_name(&sample.name))
+                .save_file()
+            {
+                save_project(&path, setter, shared);
+            }
+        }
+        if ui.button("load project…").clicked() {
+            if let Some(path) = project_dialog().pick_file() {
+                load_project(&path, setter, shared);
+            }
+        }
         ui.separator();
 
         if ui.button("load sample…").clicked() {
@@ -265,7 +331,9 @@ fn header(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(shared.status()).weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("drop an audio, .scl or .kbm file anywhere").weak());
+            ui.label(
+                egui::RichText::new("drop an audio, .mater, .scl or .kbm file anywhere").weak(),
+            );
         });
     });
 }

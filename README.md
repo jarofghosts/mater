@@ -4,7 +4,8 @@ A CLAP instrument that ports the **Bastl microGranny 2.5** — a monophonic 8-bi
 built on an ATmega328 — and makes it polyphonic, MPE-capable and microtonal.
 
 The DSP is a faithful port, quirks included. One plugin instance is one hardware *preset*: a single
-sample, one set of the eight knob values, one set of setting bits, all stored in the plugin's state.
+sample, one set of the eight knob values, one set of setting bits, all stored in the plugin's state
+and saveable to a self-contained `.mater` file.
 
 ```
 cargo xtask bundle mater --release      # -> target/bundled/Mater.clap
@@ -109,6 +110,7 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 
 ## The editor
 
+**Save project…** and **Load project…** sit next to the title; the sample controls follow them.
 The waveform is the interface: drag the `s` and `e` handles to move the loop points, the shaded band
 at the loop start is one grain, and every sounding voice draws its own playhead. Anything that is
 simply on or off is a checkbox; everything with a range is a slider.
@@ -120,7 +122,8 @@ scale is stored with the instance.
 ## Loading samples
 
 Click **Load sample…**, or drop an audio file (`.wav`, `.aiff`, `.flac`, `.mp3`, `.ogg`, mp4
-family) anywhere on the editor. Dropping a `.scl` or `.kbm` loads it as a tuning.
+family) anywhere on the editor. Dropping a `.scl` or `.kbm` loads it as a tuning, and dropping a
+`.mater` loads a whole project.
 
 The decoded 8-bit mono buffer is embedded in the plugin state, so a project or preset is
 self-contained. Two load-time options:
@@ -129,6 +132,20 @@ self-contained. Two load-time options:
   original speed. Turn it off for the literal hardware behaviour, where the file's own rate is
   ignored entirely and only the DAC clock matters.
 - **Normalise On Load** (default on) — the microGranny manual itself recommends loud samples.
+
+## Saving a project
+
+Everything is in the plugin's state, so a host that saves its project has already saved the sample,
+the scale text, the eight knobs and every switch. **Save project…** writes that same state to a
+`.mater` file of your own, and **Load project…** — or dropping the file on the editor — puts it
+back: parameters, sample and tuning together, in a host or in the standalone build.
+
+The file is JSON with the audio base64'd inside it, so it is self-contained and needs nothing else
+present to open. It carries no reference to the original audio file beyond the path it came from,
+which is only used by **reload**.
+
+Loading a project replaces the whole instance, the window size and UI scale included, exactly as
+reopening a host project would.
 
 ## Hardware CC map
 
@@ -139,7 +156,8 @@ audio thread — the displayed parameter will not move.
 
 ## What is not here
 
-- **Sample slots, presets and banks.** One instance is one preset; the host does the rest.
+- **Sample slots and banks.** One instance is one preset. A `.mater` file saves and recalls that
+  preset; browsing a library of them is the host's job.
 - **Instant loop.** It is a performance gesture for capturing a sub-loop live. With Start, End and
   Repeat all available as parameters, a static version of it would add a control without adding a
   capability.
@@ -151,7 +169,7 @@ audio thread — the displayed parameter will not move.
 ```
 crates/granny-core   the port: tables, curves, envelope, DAC, granular engine, tuning, Scala
                      no host dependencies, and where the tests live
-crates/mater-plugin  the CLAP wrapper: parameters, voices, MPE, sample loading, editor
+crates/mater-plugin  the CLAP wrapper: parameters, voices, MPE, sample loading, projects, editor
 ```
 
 ## Verifying
