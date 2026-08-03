@@ -583,6 +583,59 @@ fn toggle(
     });
 }
 
+/// An enum parameter as one radio button per variant, in the same cell shape as [`labelled`].
+///
+/// For a short list of alternatives this says what the choice is without being opened or dragged: a
+/// two-way switch between named modes is not a value you slide along, and reading it as one meant
+/// working out which end of the travel you were at.
+fn radio<T: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+    metrics: Metrics,
+) {
+    ui.allocate_ui(metrics.cell(), |ui| {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(label).small());
+
+            let current = param.value();
+            ui.allocate_ui_with_layout(
+                metrics.control(),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    // As with a checkbox, the cell still has to hold its column's width.
+                    ui.set_min_size(metrics.control());
+
+                    for (index, name) in T::variants().iter().enumerate() {
+                        let variant = T::from_index(index);
+                        let selected = variant == current;
+                        // Scoped, or the accent applied to the selected variant would carry over
+                        // to every variant drawn after it.
+                        let response = ui
+                            .scope(|ui| {
+                                if selected {
+                                    let widgets = &mut ui.visuals_mut().widgets;
+                                    widgets.inactive.fg_stroke.color = ACCENT;
+                                    widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
+                                    widgets.active.fg_stroke.color = ACCENT_BRIGHT;
+                                }
+                                ui.radio(selected, *name)
+                            })
+                            .inner;
+
+                        if response.clicked() && !selected {
+                            setter.begin_set_parameter(param);
+                            setter.set_parameter(param, variant);
+                            setter.end_set_parameter(param);
+                        }
+                    }
+                },
+            );
+        });
+    });
+}
+
 fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("knobs").strong());
     ui.horizontal_wrapped(|ui| {
@@ -617,7 +670,7 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, met
 fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("settings").strong());
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "note mode", &params.note_mode, setter, metrics);
+        radio(ui, "note mode", &params.note_mode, setter, metrics);
         toggle(ui, "legato", &params.legato, setter, metrics);
         toggle(ui, "repeat", &params.repeat, setter, metrics);
         toggle(ui, "sync", &params.sync, setter, metrics);
