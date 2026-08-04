@@ -365,6 +365,63 @@ mod tests {
         (left, right)
     }
 
+    fn peak(block: &[f32]) -> f32 {
+        block.iter().fold(0.0f32, |a, b| a.max(b.abs()))
+    }
+
+    #[test]
+    fn an_attack_is_quiet_before_the_first_control_tick() {
+        // The block renders before the voice's first control tick, so a voice that only latched its
+        // envelope there would open every note with a millisecond of unity gain.
+        let mut fixture = Fixture::new();
+        fixture.params.attack = 60;
+        let mut engine = Engine::new(16, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        let (left, _) = render(&mut engine, &fixture, 96);
+        assert!(peak(&left) < 0.01, "first 2 ms peaked at {}", peak(&left));
+    }
+
+    #[test]
+    fn an_attack_climbs_rather_than_jumping() {
+        let mut fixture = Fixture::new();
+        fixture.params.attack = 60;
+        let mut engine = Engine::new(16, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        let (left, _) = render(&mut engine, &fixture, 48_000);
+        let early = peak(&left[..4_800]);
+        let late = peak(&left[43_200..]);
+        assert!(
+            early < late * 0.5,
+            "early {early} should be well under {late}"
+        );
+    }
+
+    #[test]
+    fn a_zero_attack_still_sounds_immediately() {
+        // The hardware's snappiest setting must not pick up a millisecond of fade-in.
+        let fixture = Fixture::new();
+        assert_eq!(fixture.params.attack, 0);
+        let mut engine = Engine::new(16, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        let (left, _) = render(&mut engine, &fixture, 48);
+        assert!(
+            peak(&left) > 0.05,
+            "expected signal in the first millisecond"
+        );
+    }
+
+    #[test]
+    fn a_reused_voice_does_not_inherit_the_last_note_s_gain() {
+        let mut fixture = Fixture::new();
+        fixture.params.attack = 60;
+        let mut engine = Engine::new(1, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        render(&mut engine, &fixture, 48_000);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        let (left, _) = render(&mut engine, &fixture, 96);
+        assert!(peak(&left) < 0.01, "restrike peaked at {}", peak(&left));
+    }
+
     #[test]
     fn a_note_produces_audio() {
         let fixture = Fixture::new();

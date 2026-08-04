@@ -164,9 +164,9 @@ impl Voice {
         self.expr.velocity = velocity;
         self.expr.random = rng.rand(1024) as f32 / 1024.0;
 
-        let attack = resolve(ctx.params, ctx.mods, &self.expr).attack;
+        let r = resolve(ctx.params, ctx.mods, &self.expr);
         let midi_velocity = (velocity * 127.0).round().clamp(0.0, 127.0) as u8;
-        self.env.start(midi_velocity, attack, ctx.now_ms);
+        self.env.start(midi_velocity, r.attack, ctx.now_ms);
 
         self.grain_timer_ms = ctx.now_ms;
         self.last_grain_tick = i64::MIN;
@@ -174,6 +174,21 @@ impl Voice {
 
         self.recompute(ctx, rng);
         self.restart(ctx);
+
+        // The render loop runs before the voice's first control tick, so the envelope has to be
+        // evaluated here too. Without this the voice would play at whatever multiplier it was left
+        // with — unity gain on a fresh voice — for up to a millisecond, a full-volume burst at the
+        // head of every note regardless of the attack setting. The tick also resolves a zero attack
+        // to full volume immediately, so a snappy note stays snappy instead of starting silent.
+        self.env.tick(ctx.now_ms, r.release, self.reverse);
+        self.latch_envelope_gain();
+    }
+
+    /// Carry the envelope's attenuation into the multiplier the DAC stage uses.
+    fn latch_envelope_gain(&mut self) {
+        let (mult, offset) = vol_mult_offset(self.env.attenuation());
+        self.vol_mult = mult;
+        self.vol_offset = offset;
     }
 
     /// Retune a sounding voice without retriggering it, for LEGATO.
@@ -314,9 +329,7 @@ impl Voice {
             self.end_now();
             return;
         }
-        let (mult, offset) = vol_mult_offset(self.env.attenuation());
-        self.vol_mult = mult;
-        self.vol_offset = offset;
+        self.latch_envelope_gain();
 
         let synced = ctx.params.sync && ctx.transport.playing;
         self.render_looping(ctx, synced);

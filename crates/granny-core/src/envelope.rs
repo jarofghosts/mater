@@ -4,6 +4,9 @@
 //! [`DB_TO_MULT`] attenuation table, advanced from `millis()`. The attack and release parameters
 //! are the *interval between steps in milliseconds*, and below 30 ms the counter moves three steps
 //! at a time instead of one. Velocity sets the sustain attenuation, not a multiplier.
+//!
+//! One deliberate deviation: the end of the attack lands on the sustain level instead of snapping
+//! to full volume for a tick first. See [`Envelope::tick`].
 
 use crate::tables::DB_TO_MULT;
 
@@ -93,9 +96,7 @@ impl Envelope {
                     if reverse {
                         self.attack = 1;
                     } else {
-                        // The firmware momentarily snaps to full volume here before the sustain
-                        // stage pulls it back to the velocity attenuation on the next tick.
-                        self.level = 0;
+                        self.level = self.vel_atten;
                         self.phase = EnvPhase::Sustain;
                     }
                 } else if now_ms.saturating_sub(self.last_step_ms) >= self.attack as u64 {
@@ -106,7 +107,12 @@ impl Envelope {
                         1
                     };
                     if self.level <= self.vel_atten {
-                        self.level = 0;
+                        // Land on the sustain level rather than on full volume. The firmware
+                        // snapped to zero here and let the next pass of the loop pull the level
+                        // back down, which puts a tick of full volume at the end of every attack
+                        // that starts below velocity 127 — and the three-step path can overshoot
+                        // past the sustain level even without that.
+                        self.level = self.vel_atten;
                         self.phase = EnvPhase::Sustain;
                     }
                 }
@@ -210,6 +216,27 @@ mod tests {
         }
         // 13 triple steps at 29 ms rather than 37 single ones.
         assert!((350..=400).contains(&ms), "attack took {ms} ms");
+    }
+
+    #[test]
+    fn an_attack_never_overshoots_the_sustain_level() {
+        // Velocity 100 sustains at attenuation 6, and the three-step path steps 37, 34, ... 7, 4,
+        // so both the overshoot and the old snap-to-zero would end the attack louder than sustain.
+        let mut env = Envelope::default();
+        env.start(100, 10, 0);
+        let sustain = 31 - (100 >> 2);
+        let mut ms = 0u64;
+        let mut loudest = i16::MAX;
+        while env.phase == EnvPhase::Attack && ms < 20_000 {
+            ms += 1;
+            env.tick(ms, 0, false);
+            loudest = loudest.min(env.attenuation() as i16);
+        }
+        assert_eq!(env.phase, EnvPhase::Sustain);
+        assert_eq!(
+            loudest, sustain,
+            "the attack peaked above its own sustain level"
+        );
     }
 
     #[test]
