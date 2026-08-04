@@ -583,11 +583,16 @@ fn toggle(
     });
 }
 
-/// An enum parameter as one radio button per variant, in the same cell shape as [`labelled`].
+/// An enum parameter as one radio button per variant, labelled like [`labelled`].
 ///
-/// For a short list of alternatives this says what the choice is without being opened or dragged: a
-/// two-way switch between named modes is not a value you slide along, and reading it as one meant
-/// working out which end of the travel you were at.
+/// Every alternative is named on screen, so the choice can be read and made without being opened or
+/// dragged: a set of named modes is not a value you slide along, and reading it as one meant working
+/// out which point of the travel you were at.
+///
+/// The cell is as wide as the variant names need rather than the fixed [`Metrics::cell`] — a
+/// three-way switch with a sentence for each option cannot be squeezed into a knob's column — but
+/// never narrower than one, so short ones still line up, and never wider than the row, so a long one
+/// wraps within itself instead of off the edge.
 fn radio<T: Enum + PartialEq + Copy + 'static>(
     ui: &mut egui::Ui,
     label: &str,
@@ -595,34 +600,48 @@ fn radio<T: Enum + PartialEq + Copy + 'static>(
     setter: &ParamSetter,
     metrics: Metrics,
 ) {
-    ui.allocate_ui(metrics.cell(), |ui| {
+    let names = T::variants();
+    let cell = metrics.cell();
+    // Out to the right edge of what is on screen, not of the layout: at a large ui scale the row is
+    // wider than the window, and a variant beyond the edge cannot be read or clicked. Every one of
+    // these sits in the scrolling pane, whose bar is drawn over that edge rather than inside it.
+    let room = (ui.clip_rect().right() - ui.max_rect().left() - ui.spacing().scroll.bar_width)
+        .min(ui.max_rect().width())
+        .max(cell.x);
+    let width = radio_row_width(ui, names).clamp(cell.x, room);
+
+    ui.allocate_ui(egui::vec2(width, cell.y), |ui| {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(label).small());
 
             let current = param.value();
             ui.allocate_ui_with_layout(
-                metrics.control(),
-                egui::Layout::left_to_right(egui::Align::Center),
+                egui::vec2(width, metrics.control().y),
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                 |ui| {
                     // As with a checkbox, the cell still has to hold its column's width.
-                    ui.set_min_size(metrics.control());
+                    ui.set_min_size(egui::vec2(width, metrics.control().y));
+                    // A wrapping row wraps text by default, which would break a variant's name
+                    // across two lines rather than move the whole button down to the next one.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 
-                    for (index, name) in T::variants().iter().enumerate() {
+                    // Each button is added straight to this row, never inside a scope: a scope
+                    // cannot say how wide it will be, so the row would lose its chance to wrap.
+                    let plain = ui.style().clone();
+                    for (index, name) in names.iter().enumerate() {
                         let variant = T::from_index(index);
                         let selected = variant == current;
-                        // Scoped, or the accent applied to the selected variant would carry over
-                        // to every variant drawn after it.
-                        let response = ui
-                            .scope(|ui| {
-                                if selected {
-                                    let widgets = &mut ui.visuals_mut().widgets;
-                                    widgets.inactive.fg_stroke.color = ACCENT;
-                                    widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
-                                    widgets.active.fg_stroke.color = ACCENT_BRIGHT;
-                                }
-                                ui.radio(selected, *name)
-                            })
-                            .inner;
+                        if selected {
+                            let widgets = &mut ui.visuals_mut().widgets;
+                            widgets.inactive.fg_stroke.color = ACCENT;
+                            widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
+                            widgets.active.fg_stroke.color = ACCENT_BRIGHT;
+                        }
+                        let response = ui.add(egui::RadioButton::new(selected, *name));
+                        if selected {
+                            // Or the accent would carry over to every variant drawn after it.
+                            ui.set_style(plain.clone());
+                        }
 
                         if response.clicked() && !selected {
                             setter.begin_set_parameter(param);
@@ -634,6 +653,30 @@ fn radio<T: Enum + PartialEq + Copy + 'static>(
             );
         });
     });
+}
+
+/// How wide a row of radio buttons wants to be, by the same arithmetic the widget itself does.
+///
+/// Measured rather than guessed, because the answer moves with the ui scale and with how long the
+/// variant names happen to be — `off` and `24-edo (quarter tones)` sit in the same parameter.
+fn radio_row_width(ui: &egui::Ui, names: &[&str]) -> f32 {
+    let spacing = ui.spacing();
+    let font = egui::TextStyle::Button.resolve(ui.style());
+
+    let variants: f32 = names
+        .iter()
+        .map(|name| {
+            let text = ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap((*name).to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+                    .size()
+                    .x
+            });
+            (spacing.icon_width + spacing.icon_spacing + text).max(spacing.interact_size.x)
+        })
+        .sum();
+
+    variants + spacing.item_spacing.x * names.len().saturating_sub(1) as f32
 }
 
 fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
@@ -737,11 +780,13 @@ fn tuning(
             metrics,
         );
         labelled(ui, "root adjust", &params.root_adjust, setter, metrics);
-        labelled(ui, "pitch table", &params.pitch_table, setter, metrics);
-        labelled(ui, "snap", &params.snap, setter, metrics);
     });
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "mpe", &params.mpe_zone, setter, metrics);
+        radio(ui, "pitch table", &params.pitch_table, setter, metrics);
+        radio(ui, "snap", &params.snap, setter, metrics);
+    });
+    ui.horizontal_wrapped(|ui| {
+        radio(ui, "mpe", &params.mpe_zone, setter, metrics);
         labelled(ui, "mpe bend range", &params.bend_range, setter, metrics);
         labelled(
             ui,
@@ -803,21 +848,24 @@ fn mod_matrix(
             .italics(),
     );
     for (index, row) in params.mods.iter().enumerate() {
+        // A row is wide enough to wrap onto a second line, so it needs a gap of its own to stay one
+        // thing.
+        if index > 0 {
+            ui.add_space(metrics.at(4.0));
+        }
+        // Source and destination name themselves now, so the arrow that used to stand in for those
+        // words has nothing left to say, and the slot number can go in the first label rather than
+        // indenting the row away from the edge the others start at.
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{}.", index + 1));
-            ui.add_sized(
-                metrics.control(),
-                widgets::ParamSlider::for_param(&row.source, setter),
+            radio(
+                ui,
+                &format!("{}. source", index + 1),
+                &row.source,
+                setter,
+                metrics,
             );
-            ui.label("→");
-            ui.add_sized(
-                metrics.control(),
-                widgets::ParamSlider::for_param(&row.dest, setter),
-            );
-            ui.add_sized(
-                metrics.control(),
-                widgets::ParamSlider::for_param(&row.depth, setter),
-            );
+            radio(ui, "destination", &row.dest, setter, metrics);
+            labelled(ui, "depth", &row.depth, setter, metrics);
         });
     }
 }
@@ -830,7 +878,7 @@ fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
             .italics(),
     );
     ui.horizontal_wrapped(|ui| {
-        labelled(ui, "curve maps", &params.curve_mode, setter, metrics);
+        radio(ui, "curve maps", &params.curve_mode, setter, metrics);
         toggle(ui, "interpolate", &params.interpolate, setter, metrics);
         toggle(
             ui,

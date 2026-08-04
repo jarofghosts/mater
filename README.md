@@ -113,8 +113,9 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 **Save project…** and **Load project…** sit next to the title; the sample controls follow them.
 The waveform is the interface: drag the `s` and `e` handles to move the loop points, the shaded band
 at the loop start is one grain, and every sounding voice draws its own playhead. Anything that is
-simply on or off is a checkbox, note mode's two modes are radio buttons, and everything with a range
-is a slider.
+simply on or off is a checkbox, anything that is a choice between named alternatives — note mode,
+pitch table, snap, the MPE zone, curve maps, and the mod matrix's sources and destinations — is a
+row of radio buttons with every option named, and everything with a range is a slider.
 
 A plugin window cannot resize itself, so **UI Scale** in the top right draws the whole interface
 larger in steps from 100 % to 250 %, and the bottom-right corner drags the window out to fit it. The
