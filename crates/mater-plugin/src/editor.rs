@@ -655,6 +655,50 @@ fn radio<T: Enum + PartialEq + Copy + 'static>(
     });
 }
 
+/// An enum parameter as a drop-down, sized like the control inside a [`labelled`] cell.
+///
+/// [`radio`] is the better read wherever it fits, because every alternative is named on screen. It
+/// stops fitting somewhere around the mod matrix's six sources and ten destinations: sixteen buttons
+/// on one line is a wall rather than a choice — nothing marks where one parameter ends and the next
+/// begins, and no two slots can be compared because each wraps at a different place. A drop-down
+/// costs a click to see the alternatives and buys back a column that reads straight down.
+///
+/// Unlike [`radio`] the selected variant is not accented. The accent there separates the chosen
+/// button from the unchosen ones beside it; a closed box has nothing to be distinguished from, so
+/// the colour would only be decoration. It appears in the open list instead, where the comparison
+/// actually happens.
+fn dropdown<T: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+    metrics: Metrics,
+) {
+    let names = T::variants();
+    let current = param.value();
+
+    egui::ComboBox::from_id_salt(id)
+        .width(metrics.control().x)
+        .selected_text(names.get(current.to_index()).copied().unwrap_or_default())
+        .show_ui(ui, |ui| {
+            for (index, name) in names.iter().enumerate() {
+                let variant = T::from_index(index);
+                let selected = variant == current;
+                if selected {
+                    ui.visuals_mut().override_text_color = Some(ACCENT);
+                }
+                let response = ui.selectable_label(selected, *name);
+                ui.visuals_mut().override_text_color = None;
+
+                if response.clicked() && !selected {
+                    setter.begin_set_parameter(param);
+                    setter.set_parameter(param, variant);
+                    setter.end_set_parameter(param);
+                }
+            }
+        });
+}
+
 /// How wide a row of radio buttons wants to be, by the same arithmetic the widget itself does.
 ///
 /// Measured rather than guessed, because the answer moves with the ui scale and with how long the
@@ -847,27 +891,30 @@ fn mod_matrix(
             .weak()
             .italics(),
     );
-    for (index, row) in params.mods.iter().enumerate() {
-        // A row is wide enough to wrap onto a second line, so it needs a gap of its own to stay one
-        // thing.
-        if index > 0 {
-            ui.add_space(metrics.at(4.0));
-        }
-        // Source and destination name themselves now, so the arrow that used to stand in for those
-        // words has nothing left to say, and the slot number can go in the first label rather than
-        // indenting the row away from the edge the others start at.
-        ui.horizontal_wrapped(|ui| {
-            radio(
-                ui,
-                &format!("{}. source", index + 1),
-                &row.source,
-                setter,
-                metrics,
-            );
-            radio(ui, "destination", &row.dest, setter, metrics);
-            labelled(ui, "depth", &row.depth, setter, metrics);
+    // Three slots are the same three parameters over again, so they are laid out as a table rather
+    // than as three independent rows: the columns are what let one slot be read against the next.
+    // Naming them once at the top also frees each cell of the label it would otherwise carry.
+    egui::Grid::new("mod matrix")
+        .num_columns(4)
+        .spacing(egui::vec2(metrics.at(8.0), metrics.at(6.0)))
+        .show(ui, |ui| {
+            ui.label("");
+            for column in ["source", "destination", "depth"] {
+                ui.label(egui::RichText::new(column).small());
+            }
+            ui.end_row();
+
+            for (index, row) in params.mods.iter().enumerate() {
+                ui.label(egui::RichText::new(format!("{}", index + 1)).small());
+                dropdown(ui, ("mod source", index), &row.source, setter, metrics);
+                dropdown(ui, ("mod destination", index), &row.dest, setter, metrics);
+                ui.add_sized(
+                    metrics.control(),
+                    widgets::ParamSlider::for_param(&row.depth, setter),
+                );
+                ui.end_row();
+            }
         });
-    }
 }
 
 fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
