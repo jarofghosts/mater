@@ -733,7 +733,12 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, met
     });
     ui.horizontal_wrapped(|ui| {
         labelled(ui, "grain size", &params.grain, setter, metrics);
-        labelled(ui, "shift", &params.shift, setter, metrics);
+        // Shift moves the grain origin, so with grain size at zero — the sample playing straight
+        // through, no granular engine — the knob does nothing whatever it is set to. Grey it out
+        // rather than leave it reading "+5400 b/grain" while it is inert.
+        ui.add_enabled_ui(params.grain.value() > 0, |ui| {
+            labelled(ui, "shift", &params.shift, setter, metrics);
+        });
         labelled(ui, "start", &params.start, setter, metrics);
         labelled(ui, "end", &params.end, setter, metrics);
     });
