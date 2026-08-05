@@ -558,6 +558,89 @@ mod tests {
         }
     }
 
+    /// Where the (single) voice's read head is, as a fraction of the sample.
+    fn head(engine: &Engine, fixture: &Fixture) -> f32 {
+        engine.voices()[0].position_fraction(&fixture.sample)
+    }
+
+    #[test]
+    fn a_shift_smaller_than_a_block_still_moves_the_head() {
+        // Seeks are floored to a 512-byte SD block. The grain origin is a counter, though, so a
+        // shift of a few hundred bytes has to accumulate across grains and eventually cross a block
+        // boundary. Flooring the origin itself would swallow the whole 146..163 stretch of the knob.
+        let mut fixture = Fixture::new();
+        fixture.params.grain = 20; // roughly 57 ms
+        fixture.params.shift = 160; // +411 bytes a grain, under one block
+        let mut engine = Engine::new(1, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        render(&mut engine, &fixture, 48_000);
+        assert!(
+            head(&engine, &fixture) > 0.02,
+            "head sat at {} after a second of shifting",
+            head(&engine, &fixture)
+        );
+    }
+
+    #[test]
+    fn a_reversed_voice_marches_backwards_through_the_loop() {
+        let mut fixture = Fixture::new();
+        fixture.params.grain = 20;
+        fixture.params.shift = 56; // -9303 bytes a grain
+        let mut engine = Engine::new(1, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        render(&mut engine, &fixture, 4_800);
+        let early = head(&engine, &fixture);
+        render(&mut engine, &fixture, 24_000);
+        let late = head(&engine, &fixture);
+        assert!(
+            early > 0.9,
+            "a reversed voice starts at the end, not {early}"
+        );
+        assert!(late < early - 0.1, "{early} -> {late} is not backwards");
+    }
+
+    #[test]
+    fn a_reversed_voice_stays_inside_the_loop() {
+        // A reversed grain plays forwards from its origin and only the origin walks back, so the
+        // head has to be stopped at END. Bounded only by the end of the file it would run out of
+        // the loop, into the sample's tail, and trip the pause-and-restart path — which resets the
+        // grain clock, so the voice would sit in the last block instead of marching backwards.
+        let mut fixture = Fixture::new();
+        fixture.params.grain = 60; // a long grain, so the head has time to run
+        fixture.params.shift = 56;
+        fixture.params.end = 500;
+        let mut engine = Engine::new(1, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        // 500/1023 of the file, with a block of slack for the seek quantisation.
+        let limit = 500.0 / 1023.0 + 0.01;
+        for _ in 0..40 {
+            render(&mut engine, &fixture, 2_400);
+            let pos = head(&engine, &fixture);
+            assert!(
+                pos < limit,
+                "head reached {pos}, outside the loop at {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reversed_voice_stops_after_one_pass_without_repeat() {
+        let mut fixture = Fixture::new();
+        fixture.params.grain = 20;
+        fixture.params.shift = 0; // -16000 bytes a grain
+        fixture.params.repeat = false;
+        let mut engine = Engine::new(1, 48_000.0);
+        engine.note_on(&fixture.scene(), key(59), 1.0, Expression::default());
+        render(&mut engine, &fixture, 4_800);
+        assert_eq!(engine.active_voices(), 1, "should still be running back");
+        render(&mut engine, &fixture, 96_000);
+        assert_eq!(
+            engine.active_voices(),
+            0,
+            "should have reached the start and stopped"
+        );
+    }
+
     #[test]
     fn repeat_off_stops_at_the_end_of_the_loop() {
         let mut fixture = Fixture::new();

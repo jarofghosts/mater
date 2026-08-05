@@ -367,9 +367,14 @@ impl Voice {
                     return;
                 }
             }
-            // The firmware nudges the head back before it can hit the very end of the file.
-            if pos >= ctx.sample.file_size() - 600 {
-                self.do_grain_shift(ctx);
+            // A reversed grain still plays *forwards* from its origin — only the origin marches
+            // backwards — so the head walks off the top of the loop and the next grain is what
+            // takes it back. Bound that by END, not just by the end of the file: left to run into
+            // the tail of the sample the head trips `paused`, and the restart that follows puts it
+            // back on the last block and resets the grain clock, so a reversed voice would sit
+            // there stuttering instead of marching back through the loop.
+            if pos >= self.end_pos || pos >= ctx.sample.file_size() - 600 {
+                self.advance_grain(ctx);
             }
         } else if pos >= self.end_pos {
             if ctx.params.repeat {
@@ -393,11 +398,20 @@ impl Voice {
             let tick = ctx.transport.tick;
             if ticks > 0 && tick % ticks == 0 && tick != self.last_grain_tick {
                 self.last_grain_tick = tick;
-                self.do_grain_shift(ctx);
+                self.advance_grain(ctx);
             }
         } else if ctx.now_ms.saturating_sub(self.grain_timer_ms) >= self.grain_len_ms as u64 {
             self.grain_timer_ms = ctx.now_ms;
-            self.do_grain_shift(ctx);
+            self.advance_grain(ctx);
+        }
+    }
+
+    /// Move to the next grain. Wrapping the loop is one pass through it, so with REPEAT off that is
+    /// where the voice stops — for a reversed voice it is the only place it can, since its head
+    /// never reaches the far end of the loop on its own.
+    fn advance_grain(&mut self, ctx: &TickCtx) {
+        if self.do_grain_shift(ctx) && !ctx.params.repeat {
+            self.end_now();
         }
     }
 
@@ -412,24 +426,35 @@ impl Voice {
         self.grain_timer_ms = ctx.now_ms;
     }
 
-    /// `doGrainShift`.
-    fn do_grain_shift(&mut self, ctx: &TickCtx) {
+    /// `doGrainShift`. Reports whether the origin ran out of the loop and had to wrap, which is a
+    /// reversed voice's equivalent of the read head reaching END.
+    fn do_grain_shift(&mut self, ctx: &TickCtx) -> bool {
         self.grain_origin += self.shift as i64;
-        if self.shift >= 0 {
-            if self.grain_origin >= self.end_pos {
+        let wrapped = if self.shift >= 0 {
+            let past = self.grain_origin >= self.end_pos;
+            if past {
                 self.grain_origin = self.start_pos;
             }
-        } else if self.grain_origin >= self.end_pos || self.grain_origin <= self.start_pos {
-            self.grain_origin = self.end_pos;
-        }
+            past
+        } else {
+            let past = self.grain_origin >= self.end_pos || self.grain_origin <= self.start_pos;
+            if past {
+                self.grain_origin = self.end_pos;
+            }
+            past
+        };
         let origin = self.grain_origin;
         self.seek(ctx, origin);
+        wrapped
     }
 
     fn seek(&mut self, ctx: &TickCtx, target: i64) {
-        let clamped = ctx.sample.seek_clamp(target, ctx.fidelity.quantize_seeks);
-        self.grain_origin = clamped;
-        self.pos = clamped as f64;
+        // The origin keeps the exact target: on the hardware it is a plain counter and only
+        // `WaveRP::seek` rounds, inside the card driver. Storing the rounded position back here
+        // would re-floor the accumulator every grain, so any shift smaller than a block could never
+        // build up and the knob would look dead over its whole inner range.
+        self.grain_origin = target;
+        self.pos = ctx.sample.seek_clamp(target, ctx.fidelity.quantize_seeks) as f64;
         self.paused = false;
         if self.fade_inc > 0.0 {
             self.fade = 0.0;
