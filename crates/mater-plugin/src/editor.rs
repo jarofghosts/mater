@@ -766,7 +766,10 @@ fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
         toggle(ui, "legato", &params.legato, setter, metrics);
         toggle(ui, "repeat", &params.repeat, setter, metrics);
         toggle(ui, "sync", &params.sync, setter, metrics);
-        toggle(ui, "random shift", &params.random_shift, setter, metrics);
+        // All this does is flip the sign of the grain shift, so it goes grey with the shift knob.
+        ui.add_enabled_ui(params.grain.value() > 0, |ui| {
+            toggle(ui, "random shift", &params.random_shift, setter, metrics);
+        });
     });
     ui.horizontal_wrapped(|ui| {
         toggle(ui, "hold", &params.hold, setter, metrics);
