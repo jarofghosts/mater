@@ -40,11 +40,15 @@ const WAVE_MAX_HEIGHT: f32 = 360.0;
 const SECTION_GAP: f32 = 6.0;
 /// How close to a handle the pointer must be to grab it.
 const HANDLE_GRAB_PX: f32 = 10.0;
-/// Width of one labelled parameter cell, so the rows line up into columns.
+/// Width of one column of the parameter grid. Every cell is a whole number of these, so however
+/// the rows wrap they still line up.
 const CELL_WIDTH: f32 = 190.0;
 const CELL_HEIGHT: f32 = 42.0;
-/// Height of the control inside a cell.
+/// Height of the control inside a cell, and of the line above it that names the parameter and
+/// reads its value. That line is a fixed height because clicking a reading to type an exact value
+/// swaps it for a text field, and a taller field would jog every row below it.
 const CONTROL_HEIGHT: f32 = 20.0;
+const HEADER_HEIGHT: f32 = 18.0;
 /// Room between the interface and the window's edges. The panel's own margin is no use: the
 /// resizable window hands its contents the full clip rect, which is outside that margin.
 const WINDOW_PADDING: f32 = 8.0;
@@ -60,12 +64,35 @@ struct Metrics {
 }
 
 impl Metrics {
-    /// A labelled parameter cell.
-    fn cell(self) -> egui::Vec2 {
-        egui::vec2(CELL_WIDTH * self.scale, CELL_HEIGHT * self.scale)
+    /// A parameter cell that many columns of the grid wide.
+    fn cell(self, ui: &egui::Ui, columns: usize) -> egui::Vec2 {
+        egui::vec2(self.span(ui, columns), CELL_HEIGHT * self.scale)
     }
 
-    /// The control that sits inside one.
+    /// How wide that many columns are, the gaps between them included.
+    fn span(self, ui: &egui::Ui, columns: usize) -> f32 {
+        let columns = columns.max(1) as f32;
+        CELL_WIDTH * self.scale * columns + ui.spacing().item_spacing.x * (columns - 1.0)
+    }
+
+    /// How many whole columns it takes to hold something this wide.
+    fn columns_for(self, ui: &egui::Ui, width: f32) -> usize {
+        // A hair of slack either way, so that something exactly a whole number of columns wide is
+        // neither pushed into one more nor cut down to one fewer by the last bit of arithmetic.
+        (self.columns(ui, width) - 0.001).ceil().max(1.0) as usize
+    }
+
+    /// And how many fit within it.
+    fn columns_in(self, ui: &egui::Ui, width: f32) -> usize {
+        (self.columns(ui, width) + 0.001).floor().max(1.0) as usize
+    }
+
+    fn columns(self, ui: &egui::Ui, width: f32) -> f32 {
+        let gap = ui.spacing().item_spacing.x;
+        (width + gap) / (CELL_WIDTH * self.scale + gap)
+    }
+
+    /// The control that sits inside a one-column cell.
     fn control(self) -> egui::Vec2 {
         egui::vec2(CELL_WIDTH * self.scale, CONTROL_HEIGHT * self.scale)
     }
@@ -193,6 +220,12 @@ pub fn create(
                         ui.add_space(metrics.at(SECTION_GAP));
 
                         let controls = egui::ScrollArea::vertical().show(ui, |ui| {
+                            // The bar is drawn over the right edge of the pane rather than beside
+                            // it, so keep the grid clear of it: a cell that takes the last of the
+                            // width would otherwise be laid out underneath the bar.
+                            ui.set_max_width(
+                                (ui.available_width() - ui.spacing().scroll.bar_width).max(1.0),
+                            );
                             knobs(ui, &params, setter, metrics);
                             ui.separator();
                             settings(ui, &params, setter, metrics);
@@ -749,7 +782,63 @@ fn waveform(
     }
 }
 
-/// One parameter in a fixed-width cell, so wrapped rows line up as columns.
+/// One parameter as a cell of the grid: what it is and what it currently reads on one line, the
+/// control itself on the next, in a cell a whole number of columns wide.
+///
+/// The reading used to sit beside the control rather than above it, which is where
+/// [`widgets::ParamSlider`] puts it. That made every cell as wide as its own value text happened to
+/// be — `0 (off)` next to `1022 (end of sample)` — so no two rows shared a column and nothing could
+/// be read down the page. A caption line takes the text out of the row, and what is left is the
+/// same shape for every parameter whatever it reads.
+fn cell(
+    ui: &mut egui::Ui,
+    label: &str,
+    columns: usize,
+    metrics: Metrics,
+    reading: impl FnOnce(&mut egui::Ui),
+    control: impl FnOnce(&mut egui::Ui),
+) {
+    let size = metrics.cell(ui, columns);
+    ui.allocate_ui(size, |ui| {
+        ui.vertical(|ui| {
+            line(ui, egui::vec2(size.x, metrics.at(HEADER_HEIGHT)), |ui| {
+                ui.label(egui::RichText::new(label).small());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), reading);
+            });
+            line(ui, egui::vec2(size.x, metrics.at(CONTROL_HEIGHT)), control);
+        });
+    });
+}
+
+/// One line of a cell, held at the size it is given however little goes in it — a checkbox is
+/// narrow, and the cell still has to hold its column's width.
+fn line(ui: &mut egui::Ui, size: egui::Vec2, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+        |ui| {
+            ui.set_min_size(size);
+            contents(ui);
+        },
+    );
+}
+
+/// Grey a cell out where its parameter has nothing to do.
+///
+/// [`egui::Ui::add_enabled_ui`] on its own is not enough inside a wrapping row: the scope it opens
+/// takes whatever is left of the line and lays the cell out within that, so a cell that reaches the
+/// scope with too little room left runs off the edge instead of moving down. Wrapping the row by
+/// hand first is what a bare cell gets for free.
+fn dimmed(ui: &mut egui::Ui, enabled: bool, metrics: Metrics, add: impl FnOnce(&mut egui::Ui)) {
+    // What is left of the line, which is not what `available_width` reports in a wrapping row: that
+    // one answers with the width of a whole row, on the grounds that a wrap is always available.
+    if ui.available_rect_before_wrap().width() < metrics.span(ui, 1) {
+        ui.end_row();
+    }
+    ui.add_enabled_ui(enabled, add);
+}
+
+/// One parameter as a slider, with its value in the caption line above.
 fn labelled<'a>(
     ui: &mut egui::Ui,
     label: &str,
@@ -757,21 +846,28 @@ fn labelled<'a>(
     setter: &'a ParamSetter,
     metrics: Metrics,
 ) {
-    ui.allocate_ui(metrics.cell(), |ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).small());
-            ui.add_sized(
-                metrics.control(),
-                widgets::ParamSlider::for_param(param, setter),
+    let width = metrics.span(ui, 1);
+    cell(
+        ui,
+        label,
+        1,
+        metrics,
+        |ui| reading(ui, param, setter),
+        |ui| {
+            ui.add(
+                widgets::ParamSlider::for_param(param, setter)
+                    .without_value()
+                    .with_width(width),
             );
-        });
-    });
+        },
+    );
 }
 
 /// A switch in the same cell shape as [`labelled`].
 ///
 /// On and off are states, not values you slide between, so they get a checkbox — and the accent
-/// colour, so a row of them can be read at a glance.
+/// colour, so a row of them can be read at a glance. The word goes in the caption line where every
+/// other parameter's value is rather than beside the box, so that the columns read straight down.
 fn toggle(
     ui: &mut egui::Ui,
     label: &str,
@@ -779,37 +875,104 @@ fn toggle(
     setter: &ParamSetter,
     metrics: Metrics,
 ) {
-    ui.allocate_ui(metrics.cell(), |ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).small());
-
-            let mut value = param.value();
-            let response = ui
-                .allocate_ui_with_layout(
-                    metrics.control(),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        // A checkbox is narrow; the cell still has to hold its column's width.
-                        ui.set_min_size(metrics.control());
-                        if value {
-                            let widgets = &mut ui.visuals_mut().widgets;
-                            widgets.inactive.fg_stroke.color = ACCENT;
-                            widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
-                            widgets.active.fg_stroke.color = ACCENT_BRIGHT;
-                        }
-                        let text = if value { "on" } else { "off" };
-                        ui.add(egui::Checkbox::new(&mut value, text))
-                    },
-                )
-                .inner;
-
-            if response.changed() {
+    let current = param.value();
+    cell(
+        ui,
+        label,
+        1,
+        metrics,
+        |ui| {
+            let text = egui::RichText::new(if current { "on" } else { "off" }).small();
+            ui.label(if current {
+                text.color(ACCENT)
+            } else {
+                text.weak()
+            });
+        },
+        |ui| {
+            let mut value = current;
+            if current {
+                let widgets = &mut ui.visuals_mut().widgets;
+                widgets.inactive.fg_stroke.color = ACCENT;
+                widgets.hovered.fg_stroke.color = ACCENT;
+                widgets.active.fg_stroke.color = ACCENT_BRIGHT;
+            }
+            if ui.add(egui::Checkbox::without_text(&mut value)).changed() {
                 setter.begin_set_parameter(param);
                 setter.set_parameter(param, value);
                 setter.end_set_parameter(param);
             }
+        },
+    );
+}
+
+/// A parameter's current value, beside its name, and the way to type an exact one in.
+///
+/// The slider below draws no value of its own — [`widgets::ParamSlider`] puts it to the right of the
+/// bar, which is what made the rows ragged — and the click-to-type the widget hangs on that text
+/// goes with it. The reading has moved up here, so typing into it has too: click the number, type,
+/// enter. Escape, or clicking away, leaves the parameter alone.
+fn reading<P: Param>(ui: &mut egui::Ui, param: &P, setter: &ParamSetter) {
+    // Keyed by the parameter rather than by where its cell landed, so that a row rewrapping under
+    // the pointer cannot hand a half-typed value to whatever takes its place.
+    let entry = egui::Id::new(("value entry", param.name()));
+    let field = entry.with("field");
+    // Monospace, so that a value changing under the pointer does not shuffle the name beside it,
+    // and no larger than that name: the slider is what the eye goes to, not its caption.
+    let font = egui::FontId::monospace(egui::TextStyle::Small.resolve(ui.style()).size);
+    let room = ui.available_width();
+
+    let Some(mut typed) = ui.memory(|memory| memory.data.get_temp::<String>(entry)) else {
+        let text = param.to_string();
+        let width = ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(text.clone(), font.clone(), egui::Color32::PLACEHOLDER)
+                .size()
+                .x
         });
-    });
+        let response = ui.add(
+            egui::Label::new(egui::RichText::new(&text).font(font))
+                .sense(egui::Sense::click())
+                .truncate(),
+        );
+        // Only where it has actually been cut short. A tooltip repeating what is already on screen
+        // is noise, and every parameter in the window would carry one.
+        let response = if width > room {
+            response.on_hover_text(text)
+        } else {
+            response
+        };
+
+        if response.clicked() {
+            ui.memory_mut(|memory| {
+                memory.data.insert_temp(entry, param.to_string());
+                // The field itself does not exist until the next frame, which egui allows.
+                memory.request_focus(field);
+            });
+        }
+        return;
+    };
+
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut typed)
+            .id(field)
+            .desired_width(room)
+            .font(font),
+    );
+
+    if response.lost_focus() {
+        // Enter commits, anything else — escape, or the pointer going elsewhere — abandons it.
+        if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            if let Some(normalized) = param.string_to_normalized_value(&typed) {
+                setter.begin_set_parameter(param);
+                setter.set_parameter_normalized(param, normalized);
+                setter.end_set_parameter(param);
+            }
+        }
+        ui.memory_mut(|memory| memory.data.remove::<String>(entry));
+    } else {
+        ui.memory_mut(|memory| memory.data.insert_temp(entry, typed));
+    }
 }
 
 /// An enum parameter as one radio button per variant, labelled like [`labelled`].
@@ -818,10 +981,13 @@ fn toggle(
 /// dragged: a set of named modes is not a value you slide along, and reading it as one meant working
 /// out which point of the travel you were at.
 ///
-/// The cell is as wide as the variant names need rather than the fixed [`Metrics::cell`] — a
-/// three-way switch with a sentence for each option cannot be squeezed into a knob's column — but
-/// never narrower than one, so short ones still line up, and never wider than the row, so a long one
-/// wraps within itself instead of off the edge.
+/// The cell spans as many whole columns as the variant names need — a three-way switch with a
+/// sentence for each option cannot be squeezed into a knob's column — so a wide one still starts and
+/// ends on the grid rather than knocking every cell after it out of line. It never spans more than
+/// the row can hold, so a long one wraps within itself instead of off the edge.
+///
+/// There is no reading in the caption line: unlike a slider, the control already names its own
+/// value, and repeating it above would only say the same thing twice.
 fn radio<T: Enum + PartialEq + Copy + 'static>(
     ui: &mut egui::Ui,
     label: &str,
@@ -830,58 +996,54 @@ fn radio<T: Enum + PartialEq + Copy + 'static>(
     metrics: Metrics,
 ) {
     let names = T::variants();
-    let cell = metrics.cell();
     // Out to the right edge of what is on screen, not of the layout: at a large ui scale the row is
     // wider than the window, and a variant beyond the edge cannot be read or clicked. Every one of
     // these sits in the scrolling pane, whose bar is drawn over that edge rather than inside it.
     let room = (ui.clip_rect().right() - ui.max_rect().left() - ui.spacing().scroll.bar_width)
         .min(ui.max_rect().width())
-        .max(cell.x);
-    let width = radio_row_width(ui, names).clamp(cell.x, room);
+        .max(metrics.span(ui, 1));
+    let columns = metrics
+        .columns_for(ui, radio_row_width(ui, names))
+        .min(metrics.columns_in(ui, room));
 
-    ui.allocate_ui(egui::vec2(width, cell.y), |ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).small());
+    cell(
+        ui,
+        label,
+        columns,
+        metrics,
+        |_| {},
+        |ui| {
+            // A wrapping row wraps text by default, which would break a variant's name across two
+            // lines rather than move the whole button down to the next one.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 
+            // Each button is added straight to this row, never inside a scope: a scope cannot say
+            // how wide it will be, so the row would lose its chance to wrap.
             let current = param.value();
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, metrics.control().y),
-                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-                |ui| {
-                    // As with a checkbox, the cell still has to hold its column's width.
-                    ui.set_min_size(egui::vec2(width, metrics.control().y));
-                    // A wrapping row wraps text by default, which would break a variant's name
-                    // across two lines rather than move the whole button down to the next one.
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let plain = ui.style().clone();
+            for (index, name) in names.iter().enumerate() {
+                let variant = T::from_index(index);
+                let selected = variant == current;
+                if selected {
+                    let widgets = &mut ui.visuals_mut().widgets;
+                    widgets.inactive.fg_stroke.color = ACCENT;
+                    widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
+                    widgets.active.fg_stroke.color = ACCENT_BRIGHT;
+                }
+                let response = ui.add(egui::RadioButton::new(selected, *name));
+                if selected {
+                    // Or the accent would carry over to every variant drawn after it.
+                    ui.set_style(plain.clone());
+                }
 
-                    // Each button is added straight to this row, never inside a scope: a scope
-                    // cannot say how wide it will be, so the row would lose its chance to wrap.
-                    let plain = ui.style().clone();
-                    for (index, name) in names.iter().enumerate() {
-                        let variant = T::from_index(index);
-                        let selected = variant == current;
-                        if selected {
-                            let widgets = &mut ui.visuals_mut().widgets;
-                            widgets.inactive.fg_stroke.color = ACCENT;
-                            widgets.hovered.fg_stroke.color = ACCENT_BRIGHT;
-                            widgets.active.fg_stroke.color = ACCENT_BRIGHT;
-                        }
-                        let response = ui.add(egui::RadioButton::new(selected, *name));
-                        if selected {
-                            // Or the accent would carry over to every variant drawn after it.
-                            ui.set_style(plain.clone());
-                        }
-
-                        if response.clicked() && !selected {
-                            setter.begin_set_parameter(param);
-                            setter.set_parameter(param, variant);
-                            setter.end_set_parameter(param);
-                        }
-                    }
-                },
-            );
-        });
-    });
+                if response.clicked() && !selected {
+                    setter.begin_set_parameter(param);
+                    setter.set_parameter(param, variant);
+                    setter.end_set_parameter(param);
+                }
+            }
+        },
+    );
 }
 
 /// An enum parameter as a drop-down, sized like the control inside a [`labelled`] cell.
@@ -954,18 +1116,18 @@ fn radio_row_width(ui: &egui::Ui, names: &[&str]) -> f32 {
 
 fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
     ui.label(egui::RichText::new("knobs").strong());
+    // One run of cells rather than two rows of four: the grid is what puts them in columns, and
+    // letting it wrap to the window means eight across when there is room for eight.
     ui.horizontal_wrapped(|ui| {
         labelled(ui, "rate", &params.rate, setter, metrics);
         labelled(ui, "crush", &params.crush, setter, metrics);
         labelled(ui, "attack", &params.attack, setter, metrics);
         labelled(ui, "release", &params.release, setter, metrics);
-    });
-    ui.horizontal_wrapped(|ui| {
         labelled(ui, "grain size", &params.grain, setter, metrics);
         // Shift moves the grain origin, so with grain size at zero — the sample playing straight
         // through, no granular engine — the knob does nothing whatever it is set to. Grey it out
         // rather than leave it reading "+5400 b/grain" while it is inert.
-        ui.add_enabled_ui(params.grain.value() > 0, |ui| {
+        dimmed(ui, params.grain.value() > 0, metrics, |ui| {
             labelled(ui, "shift", &params.shift, setter, metrics);
         });
         labelled(ui, "start", &params.start, setter, metrics);
@@ -996,11 +1158,9 @@ fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
         toggle(ui, "repeat", &params.repeat, setter, metrics);
         toggle(ui, "sync", &params.sync, setter, metrics);
         // All this does is flip the sign of the grain shift, so it goes grey with the shift knob.
-        ui.add_enabled_ui(params.grain.value() > 0, |ui| {
+        dimmed(ui, params.grain.value() > 0, metrics, |ui| {
             toggle(ui, "random shift", &params.random_shift, setter, metrics);
         });
-    });
-    ui.horizontal_wrapped(|ui| {
         toggle(ui, "hold", &params.hold, setter, metrics);
         labelled(ui, "level", &params.level, setter, metrics);
         labelled(
@@ -1059,6 +1219,8 @@ fn tuning(
     metrics: Metrics,
 ) {
     ui.label(egui::RichText::new("tuning").strong());
+    // The same grid as the sections above, which the long enum names fit by spanning columns rather
+    // than by being cut into rows of their own.
     ui.horizontal_wrapped(|ui| {
         toggle(
             ui,
@@ -1068,12 +1230,8 @@ fn tuning(
             metrics,
         );
         labelled(ui, "root adjust", &params.root_adjust, setter, metrics);
-    });
-    ui.horizontal_wrapped(|ui| {
         radio(ui, "pitch table", &params.pitch_table, setter, metrics);
         radio(ui, "snap", &params.snap, setter, metrics);
-    });
-    ui.horizontal_wrapped(|ui| {
         radio(ui, "mpe", &params.mpe_zone, setter, metrics);
         labelled(ui, "mpe bend range", &params.bend_range, setter, metrics);
         labelled(
@@ -1084,11 +1242,13 @@ fn tuning(
             metrics,
         );
         toggle(ui, "follow rpn 0", &params.follow_rpn, setter, metrics);
+        toggle(ui, "use scala scale", &params.use_scala, setter, metrics);
     });
 
     // What the sample was found to be, and therefore what playback is transposed from.
     ui.label(root_summary(params, sample));
 
+    // The scale files are not parameters, so they keep a row of their own under the grid.
     ui.horizontal_wrapped(|ui| {
         if ui.button("load .scl…").clicked() {
             if let Some(path) = rfd::FileDialog::new()
@@ -1119,7 +1279,6 @@ fn tuning(
             format!("{} + {}", scale.scl_name, scale.kbm_name)
         };
         ui.label(description);
-        toggle(ui, "use scala scale", &params.use_scala, setter, metrics);
     });
 }
 
@@ -1179,8 +1338,6 @@ fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
             metrics,
         );
         labelled(ui, "grain fade", &params.grain_fade, setter, metrics);
-    });
-    ui.horizontal_wrapped(|ui| {
         toggle(
             ui,
             "resample on load",
