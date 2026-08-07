@@ -377,6 +377,8 @@ pub struct MaterParams {
     pub level: FloatParam,
 
     // --- polyphony, tuning and expression: no hardware equivalent ---
+    #[id = "velsens"]
+    pub vel_sensitivity: FloatParam,
     #[id = "voices"]
     pub voices: IntParam,
     #[id = "pitchtbl"]
@@ -516,6 +518,17 @@ impl MaterParams {
             .with_unit(" db")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+
+            // Full sensitivity is the hardware: velocity 0 sustains 31 steps down the dB table.
+            // At zero every note sustains where velocity 127 would, however softly it was played.
+            vel_sensitivity: FloatParam::new(
+                "velocity sens",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_unit(" %")
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage()),
 
             voices: IntParam::new(
                 "voices",

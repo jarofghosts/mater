@@ -125,6 +125,7 @@ impl Mater {
 
             hold: p.hold.value(),
             level: p.level.smoothed.next(),
+            vel_sensitivity: p.vel_sensitivity.value(),
         }
     }
 

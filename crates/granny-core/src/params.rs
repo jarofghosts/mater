@@ -60,6 +60,9 @@ pub struct HwParams {
     pub hold: bool,
     /// Output level applied to every voice.
     pub level: f32,
+    /// 0..=1. How much of velocity's sustain attenuation to apply. 1 is the hardware's full
+    /// response; 0 plays every note at the sustain level velocity 127 would give.
+    pub vel_sensitivity: f32,
 }
 
 impl Default for HwParams {
@@ -82,6 +85,7 @@ impl Default for HwParams {
             random_shift: false,
             hold: false,
             level: 0.5,
+            vel_sensitivity: 1.0,
         }
     }
 }

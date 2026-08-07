@@ -166,7 +166,12 @@ impl Voice {
 
         let r = resolve(ctx.params, ctx.mods, &self.expr);
         let midi_velocity = (velocity * 127.0).round().clamp(0.0, 127.0) as u8;
-        self.env.start(midi_velocity, r.attack, ctx.now_ms);
+        self.env.start(
+            midi_velocity,
+            ctx.params.vel_sensitivity,
+            r.attack,
+            ctx.now_ms,
+        );
 
         self.grain_timer_ms = ctx.now_ms;
         self.last_grain_tick = i64::MIN;

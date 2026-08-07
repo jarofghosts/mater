@@ -43,7 +43,8 @@ All eight support CLAP polyphonic modulation.
 `Note Mode` is the firmware's TUNED bit: **Pitch** (notes set the rate, Start sets the loop start) or
 **Slice** (notes select one of 60 slices, the Rate knob sets the pitch). `Legato`, `Repeat`, `Sync`
 and `Random Shift` are the remaining setting bits. `Hold`, `Level` and `Voices` replace hardware
-gestures. `Sync` follows the host transport where the hardware follows MIDI clock.
+gestures, and `Velocity Sens` scales what velocity costs the envelope. `Sync` follows the host
+transport where the hardware follows MIDI clock.
 
 ## Matching the keyboard
 
@@ -84,6 +85,8 @@ and are re-read every control tick, exactly as the firmware's `renderTweaking` d
   plugin state, so a preset carries its own tuning. Unmapped keys stay silent.
 - **Mod matrix** — three slots of source (pressure, slide, velocity, bend, random) → destination
   (any knob, level, pan) with a bipolar depth, applied per voice on top of the knob values.
+- **Velocity Sens** — how much of velocity's sustain attenuation to apply. 100 % is the hardware's
+  full response; at 0 % every note sustains where velocity 127 would, whatever the pad sent.
 
 ## Fidelity switches
 
@@ -106,7 +109,8 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 - Positions are byte offsets into the *whole file*, header included, and seeks refuse to go below
   one SD block — so the first 468 samples of any sample are unreachable, exactly as on the device.
 - The envelope steps through a 38-entry dB table on a millisecond clock, and velocity sets the
-  sustain attenuation rather than scaling a multiplier.
+  sustain attenuation rather than scaling a multiplier. `Velocity Sens` scales how far down the
+  table velocity reaches, but the shape of the response is the hardware's at any setting.
 
 ## The editor
 

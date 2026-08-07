@@ -22,7 +22,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: render <input.wav> <output.wav> [key=value ...]\n\n\
              knobs:    rate crush attack release grain shift start end\n\
-             settings: tuned legato repeat sync random hold level\n\
+             settings: tuned legato repeat sync random hold level velsens=<0..1>\n\
              fidelity: curve=hardware|extended interp=0|1 quantize=0|1 fade=<ms>\n\
              tuning:   match=0|1 root=<midi note> table=et|hardware snap=<edo>\n\
              playback: note=<n> chord=<n,n,n> velocity=<0..1> seconds=<s> bend=<semitones>"
@@ -76,6 +76,7 @@ fn main() -> ExitCode {
         random_shift: opts.flag("random", false),
         hold: opts.flag("hold", false),
         level: opts.float("level", 0.5),
+        vel_sensitivity: opts.float("velsens", 1.0),
     };
 
     let fidelity = Fidelity {
@@ -221,8 +222,8 @@ fn main() -> ExitCode {
 
 const KNOWN: &[&str] = &[
     "rate", "crush", "attack", "release", "grain", "shift", "start", "end", "tuned", "legato",
-    "repeat", "sync", "random", "hold", "level", "bend", "curve", "interp", "quantize", "fade",
-    "note", "chord", "velocity", "seconds", "snap", "match", "root", "table",
+    "repeat", "sync", "random", "hold", "level", "velsens", "bend", "curve", "interp", "quantize",
+    "fade", "note", "chord", "velocity", "seconds", "snap", "match", "root", "table",
 ];
 
 fn is_known(key: &str) -> bool {

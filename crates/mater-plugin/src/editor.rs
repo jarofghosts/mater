@@ -774,6 +774,13 @@ fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
     ui.horizontal_wrapped(|ui| {
         toggle(ui, "hold", &params.hold, setter, metrics);
         labelled(ui, "level", &params.level, setter, metrics);
+        labelled(
+            ui,
+            "velocity sens",
+            &params.vel_sensitivity,
+            setter,
+            metrics,
+        );
         labelled(ui, "voices", &params.voices, setter, metrics);
         toggle(ui, "hardware cc map", &params.hardware_cc, setter, metrics);
     });

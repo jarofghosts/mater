@@ -6,7 +6,8 @@
 //! at a time instead of one. Velocity sets the sustain attenuation, not a multiplier.
 //!
 //! One deliberate deviation: the end of the attack lands on the sustain level instead of snapping
-//! to full volume for a tick first. See [`Envelope::tick`].
+//! to full volume for a tick first. See [`Envelope::tick`]. The velocity sensitivity passed to
+//! [`Envelope::start`] is a plugin-only addition; at 1.0 it is the hardware's own response.
 
 use crate::tables::DB_TO_MULT;
 
@@ -52,11 +53,15 @@ impl Default for Envelope {
 
 impl Envelope {
     /// `startEnvelope`. `velocity` is the raw 7-bit MIDI value.
-    pub fn start(&mut self, velocity: u8, attack: u16, now_ms: u64) {
+    ///
+    /// `sensitivity` scales the attenuation velocity earns: 1.0 is the firmware's own response,
+    /// and 0.0 sustains every note at full volume however softly it was played.
+    pub fn start(&mut self, velocity: u8, sensitivity: f32, attack: u16, now_ms: u64) {
         self.phase = EnvPhase::Attack;
         self.level = START;
         // `velocity = 31 - (_velocity >> 2)`: full velocity means zero attenuation.
-        self.vel_atten = 31 - (velocity >> 2) as i16;
+        let atten = (31 - (velocity >> 2) as i16) as f32;
+        self.vel_atten = (atten * sensitivity.clamp(0.0, 1.0)).round() as i16;
         self.attack = attack;
         self.last_step_ms = now_ms;
     }
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn zero_attack_reaches_sustain_on_the_first_tick() {
         let mut env = Envelope::default();
-        env.start(127, 0, 0);
+        env.start(127, 1.0, 0, 0);
         env.tick(0, 0, false);
         assert_eq!(env.phase, EnvPhase::Sustain);
         assert_eq!(env.attenuation(), 0);
@@ -185,7 +190,7 @@ mod tests {
     #[test]
     fn zero_attack_is_forced_to_one_ms_for_reversed_grains() {
         let mut env = Envelope::default();
-        env.start(127, 0, 0);
+        env.start(127, 1.0, 0, 0);
         env.tick(0, 0, true);
         assert_eq!(env.phase, EnvPhase::Attack);
         assert_eq!(env.attack, 1);
@@ -194,7 +199,7 @@ mod tests {
     #[test]
     fn long_attack_takes_roughly_four_and_a_half_seconds() {
         let mut env = Envelope::default();
-        env.start(127, 127, 0);
+        env.start(127, 1.0, 127, 0);
         let mut ms = 0u64;
         while env.phase == EnvPhase::Attack && ms < 20_000 {
             ms += 1;
@@ -208,7 +213,7 @@ mod tests {
     #[test]
     fn short_attack_uses_the_three_step_path() {
         let mut env = Envelope::default();
-        env.start(127, 29, 0);
+        env.start(127, 1.0, 29, 0);
         let mut ms = 0u64;
         while env.phase == EnvPhase::Attack && ms < 20_000 {
             ms += 1;
@@ -223,7 +228,7 @@ mod tests {
         // Velocity 100 sustains at attenuation 6, and the three-step path steps 37, 34, ... 7, 4,
         // so both the overshoot and the old snap-to-zero would end the attack louder than sustain.
         let mut env = Envelope::default();
-        env.start(100, 10, 0);
+        env.start(100, 1.0, 10, 0);
         let sustain = 31 - (100 >> 2);
         let mut ms = 0u64;
         let mut loudest = i16::MAX;
@@ -242,22 +247,38 @@ mod tests {
     #[test]
     fn velocity_sets_the_sustain_attenuation() {
         let mut env = Envelope::default();
-        env.start(0, 0, 0);
+        env.start(0, 1.0, 0, 0);
         env.tick(0, 0, false);
         env.tick(1, 0, false);
         assert_eq!(env.attenuation(), 31, "silent-ish at velocity 0");
 
         let mut env = Envelope::default();
-        env.start(127, 0, 0);
+        env.start(127, 1.0, 0, 0);
         env.tick(0, 0, false);
         env.tick(1, 0, false);
         assert_eq!(env.attenuation(), 0, "full volume at velocity 127");
     }
 
     #[test]
+    fn sensitivity_scales_what_velocity_costs() {
+        // Velocity 0 earns 31 steps of attenuation at full sensitivity, so half of it is 16 (15.5
+        // rounded away from zero) and none of it is the same sustain velocity 127 would give.
+        let sustain_at = |sensitivity| {
+            let mut env = Envelope::default();
+            env.start(0, sensitivity, 0, 0);
+            env.tick(0, 0, false);
+            env.tick(1, 0, false);
+            env.attenuation()
+        };
+        assert_eq!(sustain_at(1.0), 31);
+        assert_eq!(sustain_at(0.5), 16);
+        assert_eq!(sustain_at(0.0), 0, "velocity is ignored entirely");
+    }
+
+    #[test]
     fn zero_release_finishes_immediately() {
         let mut env = Envelope::default();
-        env.start(127, 0, 0);
+        env.start(127, 1.0, 0, 0);
         env.tick(0, 0, false);
         env.release(1);
         env.tick(1, 0, false);
@@ -267,7 +288,7 @@ mod tests {
     #[test]
     fn release_runs_to_silence() {
         let mut env = Envelope::default();
-        env.start(127, 0, 0);
+        env.start(127, 1.0, 0, 0);
         env.tick(0, 100, false);
         env.tick(1, 100, false);
         env.release(1);
