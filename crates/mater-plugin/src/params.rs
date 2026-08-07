@@ -25,8 +25,8 @@ use crate::shared::{Shared, MAX_VOICES};
 /// A parameter's text-to-value callback, as nih-plug wants it.
 type StringToInt = Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>;
 
-/// The scale steps the editor offers, smallest first. A plugin window cannot resize itself, so the
-/// editor draws itself larger inside whatever window the host gives it and the corner does the rest.
+/// The scale steps the editor offers, smallest first. Changing step asks the host for a window the
+/// same amount larger or smaller, so the interface keeps filling the one it is given.
 pub const UI_SCALES: [f32; 6] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5];
 
 /// Polyphonic modulation ids for the eight knobs, in [`granny_core::params::KNOB_RANGES`] order.
@@ -335,6 +335,10 @@ pub struct MaterParams {
     /// parameter — nothing automates how big the text is — but it is saved with the instance.
     #[persist = "uiscale"]
     pub ui_scale: RwLock<f32>,
+    /// Whether the scale above was chosen, or is still whatever it was left at. An untouched scale
+    /// follows the host's own; a chosen one is never moved again.
+    #[persist = "uiscaleset"]
+    pub ui_scale_set: RwLock<bool>,
     #[persist = "sample"]
     pub sample: SampleSlot,
     #[persist = "scale"]
@@ -427,6 +431,7 @@ impl MaterParams {
         Self {
             editor_state: EguiState::from_size(960, 700),
             ui_scale: RwLock::new(UI_SCALES[0]),
+            ui_scale_set: RwLock::new(false),
             sample: SampleSlot::new(shared.clone()),
             scale: ScaleSlot::new(shared),
 
@@ -598,8 +603,15 @@ impl MaterParams {
             .clamp(UI_SCALES[0], UI_SCALES[UI_SCALES.len() - 1])
     }
 
+    /// Whether [`Self::ui_scale`] is a value someone picked, rather than the one it starts at.
+    /// Until it is, the editor follows the host's own scaling. See `editor::ui_scale`.
+    pub fn ui_scale_is_set(&self) -> bool {
+        *self.ui_scale_set.read()
+    }
+
     pub fn set_ui_scale(&self, scale: f32) {
         *self.ui_scale.write() = scale;
+        *self.ui_scale_set.write() = true;
     }
 
     pub fn load_options(&self) -> LoadOptions {

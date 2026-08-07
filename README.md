@@ -121,9 +121,24 @@ simply on or off is a checkbox, anything that is a choice between named alternat
 pitch table, snap, the MPE zone, curve maps, and the mod matrix's sources and destinations — is a
 row of radio buttons with every option named, and everything with a range is a slider.
 
-A plugin window cannot resize itself, so **UI Scale** in the top right draws the whole interface
-larger in steps from 100 % to 250 %, and the bottom-right corner drags the window out to fit it. The
-scale is stored with the instance.
+Whatever size the window ends up, the interface fills it: the controls take the height they need
+and the waveform takes everything left over, so a tall window is a taller view of the sample rather
+than a band of nothing along the bottom. Drag the bottom-right corner to any size you like.
+
+**UI Scale** in the top right draws the whole interface larger in steps from 100 % to 250 %, and the
+window follows it: changing the scale asks the host for a window the same amount larger or smaller.
+The scale is stored with the instance.
+
+It is also the *only* thing that sets how large the interface draws, and until you set it, it
+follows the host: a host scaling its own interface by 200 % has made a window for a 200 % interface,
+so that is what gets drawn in it, and the readout says `200 %` rather than claiming otherwise. Set
+it by hand and it is yours — that size on any host, saved with the instance, never moved again.
+
+The host's DPI scaling is still taken and still does what it is for underneath: a window sized for
+the display, with the interface drawn at its full resolution. What it no longer does is multiply the
+scale you chose. The two used to compound, and a host announces its factor whenever it likes and
+only gets it applied the next time the window opens, so a host set to 200 % doubled everything
+between one opening and the next while the readout still read 100 %.
 
 ## Loading samples
 

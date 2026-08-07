@@ -8,8 +8,11 @@
 use granny_core::curves::{grain_ms, shift_bytes};
 use granny_core::pitch::describe_note;
 use granny_core::sample::SampleBuffer;
+use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::*;
-use nih_plug_egui::{create_egui_editor, egui, resizable_window::ResizableWindow, widgets};
+use nih_plug_egui::{
+    create_egui_editor, egui, resizable_window::paint_resize_corner, widgets, EguiState,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -27,12 +30,14 @@ const ACCENT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(255, 187, 112);
 /// And dropped, for fills that sit behind text — slider bars, selected ranges.
 const ACCENT_FILL: egui::Color32 = egui::Color32::from_rgb(122, 60, 10);
 
-/// Fraction of the window the waveform gets, and the bounds it is held within.
+/// The share of the window the waveform takes when the controls want everything else, and the
+/// bounds that share is held within. Given a window with room to spare it takes more — see
+/// [`wave_height`].
 const WAVE_FRACTION: f32 = 0.4;
 const WAVE_MIN_HEIGHT: f32 = 160.0;
 const WAVE_MAX_HEIGHT: f32 = 360.0;
-/// However large the interface is drawn, the waveform never takes more of the window than this.
-const WAVE_HEIGHT_LIMIT: f32 = 0.55;
+/// The gap above and below the waveform.
+const SECTION_GAP: f32 = 6.0;
 /// How close to a handle the pointer must be to grab it.
 const HANDLE_GRAB_PX: f32 = 10.0;
 /// Width of one labelled parameter cell, so the rows line up into columns.
@@ -89,6 +94,57 @@ struct EditorState {
     drag: Drag,
     /// The scale the style was last built for, so it is rebuilt only when it changes.
     styled_for: Option<f32>,
+    /// The height everything under the waveform wanted when it was last drawn, which is what the
+    /// waveform gives up to it. Nothing is known about it until it has been drawn once.
+    controls_height: Option<f32>,
+}
+
+/// Takes the host's DPI scaling, and remembers what it is so the layout can divide it back out.
+///
+/// The factor is real and worth having: it is what makes the window the right size for the screen
+/// and the text sharp on it. What it must not do is change how large the interface *looks*. It used
+/// to, by a route nobody could see: nih-plug's egui integration refuses a scale factor while the
+/// editor is open and applies it the *next* time the window opens, so reopening the editor under a
+/// host set to 200 % doubled everything while `ui scale` still read 100 %. See [`layout_scale`].
+struct HostDpi {
+    inner: Box<dyn Editor>,
+    shared: Arc<Shared>,
+}
+
+impl Editor for HostDpi {
+    fn set_scale_factor(&self, factor: f32) -> bool {
+        // Only remember what was actually taken: the integration turns a factor down while the
+        // window is open, and the wrapper then keeps sizing everything by the previous one.
+        let accepted = self.inner.set_scale_factor(factor);
+        if accepted {
+            self.shared.host_dpi.store(factor, Ordering::Relaxed);
+        }
+        accepted
+    }
+
+    fn spawn(
+        &self,
+        parent: ParentWindowHandle,
+        context: Arc<dyn GuiContext>,
+    ) -> Box<dyn std::any::Any + Send> {
+        self.inner.spawn(parent, context)
+    }
+
+    fn size(&self) -> (u32, u32) {
+        self.inner.size()
+    }
+
+    fn param_value_changed(&self, id: &str, normalized_value: f32) {
+        self.inner.param_value_changed(id, normalized_value);
+    }
+
+    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
+        self.inner.param_modulation_changed(id, modulation_offset);
+    }
+
+    fn param_values_changed(&self) {
+        self.inner.param_values_changed();
+    }
 }
 
 pub fn create(
@@ -97,8 +153,9 @@ pub fn create(
     async_executor: AsyncExecutor<Mater>,
 ) -> Option<Box<dyn Editor>> {
     let egui_state = params.editor_state.clone();
+    let host_scale = shared.clone();
 
-    create_egui_editor(
+    let inner = create_egui_editor(
         egui_state.clone(),
         EditorState::default(),
         // A reopened window is a fresh context with egui's own style, so ask for ours again.
@@ -108,49 +165,152 @@ pub fn create(
             shared.collect_garbage();
             handle_dropped_files(ctx, setter, &shared, &async_executor);
 
-            let scale = params.ui_scale();
+            let host_dpi = shared.host_dpi.load(Ordering::Relaxed);
+            let scale = layout_scale(ui_scale(&params, host_dpi), host_dpi);
             if state.styled_for != Some(scale) {
                 apply_style(ctx, scale);
                 state.styled_for = Some(scale);
             }
             let metrics = Metrics { scale };
 
-            ResizableWindow::new("mater")
-                .min_size(egui::Vec2::new(640.0, 480.0))
-                .show(ctx, egui_state.as_ref(), |ui| {
-                    egui::Frame::NONE
-                        .inner_margin(metrics.padding())
-                        .show(ui, |ui| {
-                            let sample = shared.editor_sample.lock().clone();
+            window(ctx, &egui_state, setter, egui::vec2(640.0, 480.0), |ui| {
+                egui::Frame::NONE
+                    .inner_margin(metrics.padding())
+                    .show(ui, |ui| {
+                        let sample = shared.editor_sample.lock().clone();
 
-                            header(
-                                ui,
-                                &params,
-                                &shared,
-                                setter,
-                                &async_executor,
-                                &sample,
-                                metrics,
-                            );
-                            ui.add_space(metrics.at(6.0));
-                            waveform(ui, &params, &shared, setter, state, &sample, metrics);
-                            ui.add_space(metrics.at(6.0));
+                        header(
+                            ui,
+                            &params,
+                            &shared,
+                            &egui_state,
+                            setter,
+                            &async_executor,
+                            &sample,
+                        );
+                        ui.add_space(metrics.at(SECTION_GAP));
+                        waveform(ui, &params, &shared, setter, state, &sample, metrics);
+                        ui.add_space(metrics.at(SECTION_GAP));
 
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                knobs(ui, &params, setter, metrics);
-                                ui.separator();
-                                settings(ui, &params, setter, metrics);
-                                ui.separator();
-                                tuning(ui, &params, setter, &async_executor, &sample, metrics);
-                                ui.separator();
-                                mod_matrix(ui, &params, setter, metrics);
-                                ui.separator();
-                                fidelity(ui, &params, setter, metrics);
-                            });
+                        let controls = egui::ScrollArea::vertical().show(ui, |ui| {
+                            knobs(ui, &params, setter, metrics);
+                            ui.separator();
+                            settings(ui, &params, setter, metrics);
+                            ui.separator();
+                            tuning(ui, &params, setter, &async_executor, &sample, metrics);
+                            ui.separator();
+                            mod_matrix(ui, &params, setter, metrics);
+                            ui.separator();
+                            fidelity(ui, &params, setter, metrics);
                         });
-                });
+                        // What the controls wanted, which is what the waveform leaves them next
+                        // time round. They are the same height whatever the waveform does — they
+                        // wrap on the window's width — so this settles rather than oscillating.
+                        state.controls_height = Some(controls.content_size.y);
+                    });
+            });
         },
-    )
+    )?;
+
+    Some(Box::new(HostDpi {
+        inner,
+        shared: host_scale,
+    }))
+}
+
+/// The window, with a corner to drag it larger by.
+///
+/// This is nih-plug's own `ResizableWindow` with the units put right. That one asks the host for a
+/// size in points and then resizes the drawing surface to that many *pixels* — the same number only
+/// while the host's DPI scaling is 1. At 200 % the surface comes out half the window, and since
+/// OpenGL counts from the bottom left, the interface ends up painted into the bottom-left quarter
+/// with the rest of the window left black. Resizing by the route the window's initial size already
+/// takes keeps the two in step at any scaling.
+fn window(
+    ctx: &egui::Context,
+    state: &Arc<EguiState>,
+    setter: &ParamSetter,
+    min_size: egui::Vec2,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::CentralPanel::default().show(ctx, |ui| {
+        let rect = ui.clip_rect();
+        let mut content = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+        add_contents(&mut content);
+
+        let corner_size = egui::Vec2::splat(ui.visuals().resize_corner_size);
+        let corner_rect = egui::Rect::from_min_size(rect.max - corner_size, corner_size);
+        let corner = ui.interact(
+            corner_rect,
+            egui::Id::new("resize corner"),
+            egui::Sense::drag(),
+        );
+
+        if let Some(pointer) = corner.interact_pointer_pos() {
+            if corner.dragged() {
+                resize(
+                    ctx,
+                    state,
+                    setter,
+                    (pointer - rect.min + 0.5 * corner.rect.size()).max(min_size),
+                );
+            }
+        }
+
+        paint_resize_corner(&content, &corner);
+    });
+}
+
+/// Ask for a window this many points across.
+///
+/// Points are exactly what the host means by logical pixels here, because the factor it scales
+/// those by is the one egui is drawing at. So the same number goes to both parties that have to
+/// agree: the host, which owns the window and reads the size back off the editor, and the window
+/// itself, which has to follow it.
+fn resize(ctx: &egui::Context, state: &Arc<EguiState>, setter: &ParamSetter, size: egui::Vec2) {
+    let asked = (
+        size.x.round().max(1.0) as u32,
+        size.y.round().max(1.0) as u32,
+    );
+    if state.size() == asked {
+        return;
+    }
+
+    // `EguiState` keeps its size to itself. The persistence trait, which is how a host restoring a
+    // project sets it, is the way in.
+    if let Ok(resized) = Arc::try_unwrap(EguiState::from_size(asked.0, asked.1)) {
+        PersistentField::set(state, resized);
+    }
+    setter.raw_context.request_resize();
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+}
+
+/// How large the interface should draw itself, in the units the `ui scale` readout is in.
+///
+/// Until someone sets it, it follows the host: a host scaling its own interface by 200 % has sized
+/// this window for a 200 % interface, and drawing a 100 % one inside it would leave the rest of the
+/// window empty. Once it is set by hand it is exactly that, on any host, for good.
+fn ui_scale(params: &MaterParams, host_dpi: f32) -> f32 {
+    match (params.ui_scale_is_set(), host_dpi > 0.0) {
+        (true, _) => params.ui_scale(),
+        (false, true) => host_dpi,
+        (false, false) => UI_SCALES[0],
+    }
+}
+
+/// What one laid-out point is worth, with the host's DPI scaling divided back out of `ui scale`.
+///
+/// The host's factor multiplies every point on its way to the screen, so leaving it in would make
+/// the two scales compound: a host at 200 % would draw a 100 % interface at double size, and the
+/// size would change whenever the host announced a new factor. Dividing it out means `ui scale` is
+/// a size on screen and nothing else moves it, while the host's factor still does what it is for —
+/// a window sized for the display, drawn at its full resolution.
+fn layout_scale(ui_scale: f32, host_dpi: f32) -> f32 {
+    if host_dpi > 0.0 {
+        ui_scale / host_dpi
+    } else {
+        ui_scale
+    }
 }
 
 /// Rebuild the style for a given scale.
@@ -280,10 +440,10 @@ fn header(
     ui: &mut egui::Ui,
     params: &Arc<MaterParams>,
     shared: &Arc<Shared>,
+    state: &Arc<EguiState>,
     setter: &ParamSetter,
     executor: &AsyncExecutor<Mater>,
     sample: &SampleBuffer,
-    metrics: Metrics,
 ) {
     ui.horizontal(|ui| {
         ui.heading("mater");
@@ -324,7 +484,7 @@ fn header(
         ui.label(describe_sample(sample));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            scale_control(ui, params, metrics);
+            scale_control(ui, params, shared, state, setter);
         });
     });
 
@@ -340,8 +500,17 @@ fn header(
 
 /// How large the interface draws itself, in steps. Laid out right to left, so it reads
 /// `ui scale [−] 125 % [+]`.
-fn scale_control(ui: &mut egui::Ui, params: &Arc<MaterParams>, metrics: Metrics) {
-    let scale = metrics.scale;
+fn scale_control(
+    ui: &mut egui::Ui,
+    params: &Arc<MaterParams>,
+    shared: &Arc<Shared>,
+    state: &Arc<EguiState>,
+    setter: &ParamSetter,
+) {
+    // The size being drawn, not what the layout is working in: the host's DPI scaling has been
+    // divided out of that one, and reporting it would show 100 % on a host set to 200 %.
+    let host_dpi = shared.host_dpi.load(Ordering::Relaxed);
+    let scale = ui_scale(params, host_dpi);
     // The nearest step, so a state saved by a future version with other steps still lands somewhere.
     let step = UI_SCALES
         .iter()
@@ -350,17 +519,80 @@ fn scale_control(ui: &mut egui::Ui, params: &Arc<MaterParams>, metrics: Metrics)
 
     let larger = ui.add_enabled(step + 1 < UI_SCALES.len(), egui::Button::new("+"));
     if larger.clicked() {
-        params.set_ui_scale(UI_SCALES[step + 1]);
+        rescale(ui.ctx(), params, state, setter, scale, UI_SCALES[step + 1]);
     }
 
-    ui.label(egui::RichText::new(format!("{:.0} %", scale * 100.0)).monospace());
+    // This is the only thing that sets the size of the interface — see `layout_scale` — so say
+    // where the number came from while it is still the host's rather than anyone's choice.
+    ui.label(egui::RichText::new(format!("{:.0} %", scale * 100.0)).monospace())
+        .on_hover_text(match (params.ui_scale_is_set(), host_dpi) {
+            (true, _) => {
+                "how large the interface draws itself, saved with the instance".to_string()
+            }
+            (false, dpi) if dpi != 1.0 => format!(
+                "how large the interface draws itself — following the host's own scaling of \
+                 {:.0} % until you set it here, after which it is yours",
+                dpi * 100.0
+            ),
+            (false, _) => {
+                "how large the interface draws itself, saved with the instance".to_string()
+            }
+        });
 
     let smaller = ui.add_enabled(step > 0, egui::Button::new("−"));
     if smaller.clicked() {
-        params.set_ui_scale(UI_SCALES[step - 1]);
+        rescale(ui.ctx(), params, state, setter, scale, UI_SCALES[step - 1]);
     }
 
     ui.label(egui::RichText::new("ui scale").weak());
+}
+
+/// Draw the interface at a new size, and ask for a window that fits it.
+///
+/// Without the second half, making the interface smaller would just leave the bottom of the window
+/// empty, and making it larger would push everything out of sight until the corner was dragged.
+fn rescale(
+    ctx: &egui::Context,
+    params: &Arc<MaterParams>,
+    state: &Arc<EguiState>,
+    setter: &ParamSetter,
+    from: f32,
+    to: f32,
+) {
+    params.set_ui_scale(to);
+    resize(ctx, state, setter, rescaled(state.size(), from, to));
+}
+
+/// The window that holds an interface redrawn from one scale at another: the same window, by the
+/// ratio between them. A scale of zero is not one the steps offer, but dividing by it would hand
+/// back a window of nan.
+fn rescaled(size: (u32, u32), from: f32, to: f32) -> egui::Vec2 {
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    if from <= 0.0 {
+        return egui::vec2(width, height);
+    }
+    let ratio = to / from;
+    egui::vec2(width * ratio, height * ratio)
+}
+
+/// How tall the waveform draws, given the height left under the header and the height the controls
+/// wanted when they were last drawn.
+///
+/// Whatever those controls do not need, the waveform takes: a window with room to spare shows more
+/// of the sample rather than a band of nothing along the bottom, at any scale and whatever size a
+/// host or a window manager decides the window is. Where there is nothing spare — the window the
+/// editor opens at is already smaller than everything wants, and the controls scroll — it falls
+/// back to its share of what there is, which is what it has always taken.
+fn wave_height(available: f32, controls: Option<f32>, metrics: Metrics) -> f32 {
+    let share = (available * WAVE_FRACTION).clamp(
+        metrics.at(WAVE_MIN_HEIGHT),
+        metrics.at(WAVE_MAX_HEIGHT).max(metrics.at(WAVE_MIN_HEIGHT)),
+    );
+    match controls {
+        // Nothing drawn yet, so nothing is known about what the rest of it wants.
+        None => share,
+        Some(controls) => (available - controls - metrics.at(SECTION_GAP)).max(share),
+    }
 }
 
 /// Draw the waveform, its handles, the grain window and every live playhead.
@@ -373,10 +605,7 @@ fn waveform(
     sample: &SampleBuffer,
     metrics: Metrics,
 ) {
-    let available = ui.available_height();
-    let height = (available * WAVE_FRACTION)
-        .clamp(metrics.at(WAVE_MIN_HEIGHT), metrics.at(WAVE_MAX_HEIGHT))
-        .min(available * WAVE_HEIGHT_LIMIT);
+    let height = wave_height(ui.available_height(), state.controls_height, metrics);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
         egui::Sense::click_and_drag(),
@@ -967,4 +1196,131 @@ fn fidelity(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
             metrics,
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stands in for the egui editor, which needs a window to build. `takes_scaling` is what the
+    /// real one does: it turns a scale factor down while its window is open.
+    struct NoEditor {
+        takes_scaling: bool,
+    }
+
+    impl Editor for NoEditor {
+        fn spawn(
+            &self,
+            _parent: ParentWindowHandle,
+            _context: Arc<dyn GuiContext>,
+        ) -> Box<dyn std::any::Any + Send> {
+            unreachable!("the test never opens a window")
+        }
+        fn size(&self) -> (u32, u32) {
+            (960, 700)
+        }
+        fn set_scale_factor(&self, _factor: f32) -> bool {
+            self.takes_scaling
+        }
+        fn param_value_changed(&self, _id: &str, _normalized_value: f32) {}
+        fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {}
+        fn param_values_changed(&self) {}
+    }
+
+    fn editor_over(takes_scaling: bool) -> (HostDpi, Arc<Shared>) {
+        let shared = Arc::new(Shared::default());
+        let editor = HostDpi {
+            inner: Box::new(NoEditor { takes_scaling }),
+            shared: shared.clone(),
+        };
+        (editor, shared)
+    }
+
+    #[test]
+    fn the_hosts_dpi_scaling_is_taken_and_remembered() {
+        let (editor, shared) = editor_over(true);
+
+        assert!(editor.set_scale_factor(2.0));
+        assert_eq!(shared.host_dpi.load(Ordering::Relaxed), 2.0);
+    }
+
+    #[test]
+    fn a_refused_factor_is_not_remembered() {
+        // The window keeps being sized by the factor it was opened with, so believing this one
+        // would divide the layout by a number nothing on screen is using.
+        let (editor, shared) = editor_over(false);
+
+        assert!(!editor.set_scale_factor(2.0));
+        assert_eq!(shared.host_dpi.load(Ordering::Relaxed), 1.0);
+    }
+
+    #[test]
+    fn the_hosts_scaling_does_not_change_how_large_the_interface_looks() {
+        // 100 % is the same size on screen whatever the host announces: at 200 % every point is
+        // worth two pixels, so the layout works in half as many of them.
+        assert_eq!(layout_scale(1.0, 1.0), 1.0);
+        assert_eq!(layout_scale(1.0, 2.0), 0.5);
+        assert_eq!(layout_scale(2.5, 2.0), 1.25);
+        // And a host that announces nonsense is ignored rather than dividing by zero.
+        assert_eq!(layout_scale(1.5, 0.0), 1.5);
+    }
+
+    #[test]
+    fn an_untouched_scale_follows_the_host_and_fills_the_window() {
+        let params = MaterParams::new(Arc::new(Shared::default()));
+
+        // The window a host at 200 % makes is twice the size, so the interface has to be too or
+        // the difference is left empty. A layout scale of exactly 1 is that interface.
+        assert_eq!(ui_scale(&params, 2.0), 2.0);
+        assert_eq!(layout_scale(ui_scale(&params, 2.0), 2.0), 1.0);
+        // Including at whatever odd factor a host feels like reporting.
+        assert_eq!(layout_scale(ui_scale(&params, 1.6), 1.6), 1.0);
+    }
+
+    #[test]
+    fn the_waveform_takes_what_the_controls_leave() {
+        let metrics = Metrics { scale: 1.0 };
+
+        // A window with room to spare: the waveform absorbs it instead of leaving it empty.
+        assert_eq!(wave_height(1000.0, Some(300.0), metrics), 694.0);
+        // One that is already too small: the controls scroll and the waveform keeps its share.
+        assert_eq!(wave_height(600.0, Some(560.0), metrics), 240.0);
+        // Exactly enough for both is the case the share must not win.
+        assert_eq!(wave_height(1000.0, Some(600.0), metrics), 394.0);
+        // Before anything under it has been drawn, that share is all there is to go on.
+        assert_eq!(wave_height(1000.0, None, metrics), 360.0);
+        // And the share is held above a floor however little the window leaves.
+        assert_eq!(wave_height(200.0, Some(500.0), metrics), 160.0);
+    }
+
+    #[test]
+    fn the_waveform_scales_with_the_interface() {
+        // The bounds on its share are sizes on screen, so they move with the rest of the layout.
+        let metrics = Metrics { scale: 2.0 };
+
+        assert_eq!(wave_height(1000.0, None, metrics), 400.0);
+        assert_eq!(wave_height(600.0, Some(560.0), metrics), 320.0);
+    }
+
+    #[test]
+    fn the_window_follows_the_scale_it_is_holding() {
+        // Smaller interface, smaller window: leaving it where it was is what put an empty band
+        // along the bottom of it.
+        assert_eq!(rescaled((960, 700), 2.0, 1.75), egui::vec2(840.0, 612.5));
+        assert_eq!(rescaled((960, 700), 1.0, 2.0), egui::vec2(1920.0, 1400.0));
+        assert_eq!(rescaled((960, 700), 1.5, 1.5), egui::vec2(960.0, 700.0));
+        // Whatever the window has been dragged to is what gets scaled, not the size it opened at.
+        assert_eq!(rescaled((1200, 900), 2.0, 1.0), egui::vec2(600.0, 450.0));
+        assert_eq!(rescaled((960, 700), 0.0, 2.0), egui::vec2(960.0, 700.0));
+    }
+
+    #[test]
+    fn a_scale_set_by_hand_is_not_moved_by_the_host() {
+        let params = MaterParams::new(Arc::new(Shared::default()));
+        params.set_ui_scale(1.25);
+
+        assert_eq!(ui_scale(&params, 2.0), 1.25);
+        // Which is a smaller interface than the window was sized for. That is the point of asking.
+        assert_eq!(layout_scale(ui_scale(&params, 2.0), 2.0), 0.625);
+    }
 }

@@ -37,6 +37,9 @@ pub struct Shared {
     pub playheads: Vec<AtomicF32>,
     /// Last message to show in the editor: what loaded, or why it did not.
     pub status: Mutex<String>,
+    /// The DPI scaling the host last asked for. Declined, and kept only so the editor can say so.
+    /// See `editor::FixedScale`.
+    pub host_dpi: AtomicF32,
 }
 
 impl Default for Shared {
@@ -49,6 +52,7 @@ impl Default for Shared {
                 .map(|_| AtomicF32::new(PLAYHEAD_IDLE))
                 .collect(),
             status: Mutex::new("no sample loaded".into()),
+            host_dpi: AtomicF32::new(1.0),
         }
     }
 }
