@@ -378,12 +378,17 @@ impl Mater {
     }
 
     fn publish_playheads(&self) {
+        let note_mode = self.params.note_mode();
         for (index, slot) in self.shared.playheads.iter().enumerate() {
-            let position = match self.engine.voices().get(index) {
-                Some(voice) if voice.active => voice.position_fraction(&self.sample),
-                _ => PLAYHEAD_IDLE,
+            let (position, sliced) = match self.engine.voices().get(index) {
+                Some(voice) if voice.active => (
+                    voice.position_fraction(&self.sample),
+                    !note_mode.tuned(voice.key.channel),
+                ),
+                _ => (PLAYHEAD_IDLE, false),
             };
             slot.store(position, Ordering::Relaxed);
+            self.shared.playhead_sliced[index].store(sliced, Ordering::Relaxed);
         }
     }
 }

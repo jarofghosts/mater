@@ -136,7 +136,8 @@ The waveform is the interface: drag the `s` and `e` handles to move the loop poi
 at the loop start is one grain, and every sounding voice draws its own playhead. In Slice and Split
 the sixty slice divisions are drawn faintly behind the waveform, at the byte offsets a note actually
 drops the read head — they are a reference, not a control, so they stay under the peaks and out of
-the way. Anything that is
+the way — and the slice each sounding head is inside is tinted, which in a Split is only ever the
+heads on the slice channel. Anything that is
 simply on or off is a checkbox, everything with a range is a slider, and a choice between named
 alternatives is a row of radio buttons with every option named — note mode, pitch table, snap, the
 MPE zone and curve maps all fit on one line that way. The mod matrix does not: six sources against

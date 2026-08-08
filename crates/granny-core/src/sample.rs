@@ -122,6 +122,31 @@ impl SampleBuffer {
         }
         ((file_pos - HEADER_BYTES) as f32 / self.data.len() as f32).clamp(0.0, 1.0)
     }
+
+    /// Which of the sixty slices a fraction of the audio falls in.
+    ///
+    /// The inverse of [`Self::position_fraction`] followed by the division a slice-mode note does,
+    /// so the answer is the slice a read head at that point is inside — which is not necessarily
+    /// the slice whose note started it, since the loop runs on past its end.
+    pub fn slice_at(&self, fraction: f32) -> i64 {
+        // Rounded rather than truncated: a fraction is a byte offset that has been through an f32
+        // and back, and a head sitting exactly on a slice start would otherwise land a byte short
+        // of it and report the slice before.
+        let offset = (fraction.clamp(0.0, 1.0) * self.data.len() as f32).round() as i64;
+        ((HEADER_BYTES + offset) / self.granule(true)).clamp(0, SLICE_COUNT - 1)
+    }
+
+    /// Where a slice begins and ends, as fractions of the audio, for drawing it.
+    ///
+    /// Taken from the granule rather than from sixtieths, because the header offset and the
+    /// truncating division are what decide where a note actually drops the read head.
+    pub fn slice_bounds(&self, index: i64) -> (f32, f32) {
+        let granule = self.granule(true);
+        (
+            self.position_fraction(index * granule),
+            self.position_fraction((index + 1) * granule),
+        )
+    }
 }
 
 fn compute_peaks(data: &[u8]) -> Vec<(u8, u8)> {
@@ -188,6 +213,29 @@ mod tests {
         assert_eq!(s.sample_at(0), 0x80);
         assert_eq!(s.sample_at(HEADER_BYTES), 200);
         assert_eq!(s.sample_at(HEADER_BYTES + 1), 0);
+    }
+
+    #[test]
+    fn a_slice_start_is_inside_the_slice_it_starts() {
+        let s = buffer(102_400);
+        let granule = s.granule(true);
+        // Every slice start round-trips: where a note drops the head is in that note's own slice,
+        // and its band starts exactly there.
+        for index in 0..SLICE_COUNT {
+            let fraction = s.position_fraction(index * granule);
+            assert_eq!(s.slice_at(fraction), index, "slice {index}");
+            assert_eq!(s.slice_bounds(index).0, fraction);
+        }
+    }
+
+    #[test]
+    fn a_head_past_the_last_slice_stays_on_the_last_slice() {
+        let s = buffer(102_400);
+        // Sixty truncated granules stop short of the file, so the tail belongs to slice 59 rather
+        // than to a sixty-first that does not exist.
+        assert_eq!(s.slice_at(1.0), SLICE_COUNT - 1);
+        assert_eq!(s.slice_at(0.0), 0);
+        assert_eq!(s.slice_at(-5.0), 0);
     }
 
     #[test]

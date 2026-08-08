@@ -35,6 +35,10 @@ pub struct Shared {
     pub sample_generation: AtomicUsize,
     /// Per-voice playhead as a fraction of the sample, or [`PLAYHEAD_IDLE`].
     pub playheads: Vec<AtomicF32>,
+    /// Whether each of those voices is playing a slice, so the editor can light the slice its head
+    /// is in. The audio thread is the only side that knows: the answer is the note mode asked about
+    /// the channel that voice's note arrived on, and in a split the pool holds both kinds at once.
+    pub playhead_sliced: Vec<AtomicBool>,
     /// Last message to show in the editor: what loaded, or why it did not.
     pub status: Mutex<String>,
     /// The DPI scaling the host last announced, and took. Kept so the layout can divide it back out
@@ -55,6 +59,7 @@ impl Default for Shared {
             playheads: (0..MAX_VOICES)
                 .map(|_| AtomicF32::new(PLAYHEAD_IDLE))
                 .collect(),
+            playhead_sliced: (0..MAX_VOICES).map(|_| AtomicBool::new(false)).collect(),
             status: Mutex::new("no sample loaded".into()),
             host_dpi: AtomicF32::new(1.0),
             host_dpi_reported: AtomicBool::new(false),

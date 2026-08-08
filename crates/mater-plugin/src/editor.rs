@@ -798,6 +798,20 @@ fn waveform(
     );
     painter.rect_filled(loop_rect, 0.0, visuals.faint_bg_color);
 
+    // Read once: the slice a head is in is drawn under the waveform and the head itself over it.
+    let playheads: Vec<(f32, bool)> = shared
+        .playheads
+        .iter()
+        .zip(&shared.playhead_sliced)
+        .map(|(position, sliced)| {
+            (
+                position.load(Ordering::Relaxed),
+                sliced.load(Ordering::Relaxed),
+            )
+        })
+        .filter(|(position, _)| *position > PLAYHEAD_IDLE)
+        .collect();
+
     // Where the sixty slices fall, for the modes that play them. Drawn under the waveform and
     // barely tinted: sixty divisions is a lot of ink for something that is only ever a reference,
     // and the loop handles are what the eye should still find first.
@@ -805,16 +819,27 @@ fn waveform(
         params.note_mode.value(),
         NoteModeParam::Slice | NoteModeParam::Split
     ) {
-        // Measured the way the engine measures it, header offset and truncating division included,
-        // rather than laid out in sixtieths of the picture: these mark where a note actually drops
-        // the read head, and on a short sample the two are not quite the same place.
-        let granule = sample.granule(true);
+        // The slice each sounding head is inside. Tinted under the divisions rather than outlined
+        // between them, so a head crossing into the next slice hands the fill on without either
+        // one gaining an edge the other slices do not have.
+        for &(position, sliced) in &playheads {
+            if !sliced {
+                continue;
+            }
+            let (left, right) = sample.slice_bounds(sample.slice_at(position));
+            painter.rect_filled(
+                egui::Rect::from_x_y_ranges(x_at(left)..=x_at(right), rect.y_range()),
+                0.0,
+                ACCENT.gamma_multiply(0.12),
+            );
+        }
+
         let stroke = egui::Stroke::new(
             metrics.at(1.0),
             visuals.weak_text_color().gamma_multiply(0.4),
         );
         for index in 1..SLICE_COUNT {
-            let x = x_at(sample.position_fraction(index * granule));
+            let x = x_at(sample.slice_bounds(index).0);
             painter.line_segment(
                 [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
                 stroke,
@@ -859,11 +884,7 @@ fn waveform(
     }
 
     // Playheads.
-    for slot in &shared.playheads {
-        let position = slot.load(Ordering::Relaxed);
-        if position <= PLAYHEAD_IDLE {
-            continue;
-        }
+    for &(position, _) in &playheads {
         let x = x_at(position);
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
