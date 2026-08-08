@@ -1,4 +1,4 @@
-# Mater
+# mater
 
 A CLAP instrument that ports the **Bastl microGranny 2.5** — a monophonic 8-bit granular sampler
 built on an ATmega328 — and makes it polyphonic, MPE-capable and microtonal.
@@ -7,12 +7,19 @@ The DSP is a faithful port, quirks included. One plugin instance is one hardware
 sample, one set of the eight knob values, one set of setting bits, all stored in the plugin's state
 and saveable to a self-contained `.mater` file.
 
+## Installing
+
+Built bundles for Linux, macOS (universal) and Windows are attached to every
+[release](https://github.com/jarofghosts/mater/releases). Or build it yourself:
+
 ```
-cargo xtask bundle mater --release      # -> target/bundled/Mater.clap
+cargo xtask bundle mater --release      # -> target/bundled/mater.clap
 ```
 
-Copy `Mater.clap` to `~/.clap/` (Linux), `~/Library/Audio/Plug-Ins/CLAP/` (macOS) or
-`%COMMONPROGRAMFILES%\CLAP\` (Windows).
+Either way, copy `mater.clap` to `~/.clap/` (Linux), `~/Library/Audio/Plug-Ins/CLAP/` (macOS) or
+`%COMMONPROGRAMFILES%\CLAP\` (Windows). On macOS it is a directory rather than a file, so keep it
+whole; a downloaded one is neither signed nor notarised and needs clearing by hand,
+`xattr -dr com.apple.quarantine mater.clap`.
 
 There is also a standalone build for playing it without a host:
 
@@ -48,7 +55,7 @@ transport where the hardware follows MIDI clock.
 
 ## Matching the keyboard
 
-A sampler only plays in tune if it knows what pitch the sample already is. On load, Mater runs YIN
+A sampler only plays in tune if it knows what pitch the sample already is. On load, mater runs YIN
 pitch detection over the audio and uses the result as the **root** — the note that plays the sample
 back untransposed. Playing note N then transposes by `N - root`, so N is what you actually hear, and
 a microtonal MPE bend lands where it was asked to.
@@ -117,9 +124,15 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 **Save project…** and **Load project…** sit next to the title; the sample controls follow them.
 The waveform is the interface: drag the `s` and `e` handles to move the loop points, the shaded band
 at the loop start is one grain, and every sounding voice draws its own playhead. Anything that is
-simply on or off is a checkbox, anything that is a choice between named alternatives — note mode,
-pitch table, snap, the MPE zone, curve maps, and the mod matrix's sources and destinations — is a
-row of radio buttons with every option named, and everything with a range is a slider.
+simply on or off is a checkbox, everything with a range is a slider, and a choice between named
+alternatives is a row of radio buttons with every option named — note mode, pitch table, snap, the
+MPE zone and curve maps all fit on one line that way. The mod matrix does not: six sources against
+ten destinations is sixteen buttons in a row with nothing marking where one parameter ends, so its
+sources and destinations are drop-downs, and the three slots sit in a grid with their depths.
+
+A control that cannot do anything is greyed out rather than left to look live. Grain size at zero
+switches the granular engine off, which leaves both `shift` and `random shift` inert — so both go
+grey, instead of `shift` reading out a byte figure it will not act on.
 
 Whatever size the window ends up, the interface fills it: the controls take the height they need
 and the waveform takes everything left over, so a tall window is a taller view of the sample rather
@@ -198,7 +211,7 @@ crates/mater-plugin  the CLAP wrapper: parameters, voices, MPE, sample loading, 
 ```
 cargo test --workspace
 cargo run -p granny-core --example render -- in.wav out.wav note=69 grain=30 shift=200 seconds=3
-cargo xtask bundle mater --release && clap-validator validate target/bundled/Mater.clap
+cargo xtask bundle mater --release && clap-validator validate target/bundled/mater.clap
 ```
 
 The `render` example drives the engine offline and writes a WAV, which is the quickest way to hear

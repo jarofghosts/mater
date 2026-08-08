@@ -1,0 +1,129 @@
+name: release
+
+# Builds the CLAP bundle for Linux, macOS and Windows. Every run leaves the three
+# bundles as downloadable artifacts; a run triggered by a `v*` tag also attaches
+# them to a GitHub release of that tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+            command: bundle
+          # macos-14 is arm64, and `bundle-universal` lipos both halves together,
+          # so one bundle covers Apple silicon and Intel.
+          - platform: macos-universal
+            os: macos-14
+            command: bundle-universal
+          - platform: windows-x86_64
+            os: windows-2022
+            command: bundle
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # nih-plug's egui integration draws through X11 and OpenGL, and the clipboard
+      # reaches for wayland as well. The file dialogs go through the xdg desktop
+      # portal, so there is no toolkit to install for those.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgl-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev libxkbcommon-dev
+
+      - name: Add macOS cross targets
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ matrix.platform }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.platform }}-cargo-
+
+      - name: Bundle
+        run: cargo xtask ${{ matrix.command }} mater --release
+
+      # The tag is the version when there is one; otherwise the commit, so a
+      # manually triggered build says what it was built from.
+      - name: Name the archive
+        id: name
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "archive=mater-${version}-${{ matrix.platform }}" >> "$GITHUB_OUTPUT"
+
+      # On macOS `mater.clap` is a bundle directory rather than a file, so the
+      # archive is what keeps it in one piece.
+      - name: Archive (unix)
+        if: runner.os != 'Windows'
+        run: zip -r -y "${{ steps.name.outputs.archive }}.zip" mater.clap
+        working-directory: target/bundled
+
+      - name: Archive (windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path mater.clap -DestinationPath "${{ steps.name.outputs.archive }}.zip"
+        working-directory: target/bundled
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.archive }}
+          path: target/bundled/${{ steps.name.outputs.archive }}.zip
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: bundle
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: archives
+          merge-multiple: true
+
+      # `--notes` is prepended to the notes `--generate-notes` asks GitHub for,
+      # so the install instructions sit above the generated changelog.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes=$(cat <<'NOTES'
+          Unzip and copy `mater.clap` to `~/.clap/` (Linux),
+          `~/Library/Audio/Plug-Ins/CLAP/` (macOS) or `%COMMONPROGRAMFILES%\CLAP\` (Windows).
+
+          The macOS bundle is universal. Nothing here is signed or notarised, so macOS
+          will want it cleared by hand: `xattr -dr com.apple.quarantine mater.clap`.
+          NOTES
+          )
+          gh release create "${GITHUB_REF_NAME}" archives/*.zip \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "$notes"
