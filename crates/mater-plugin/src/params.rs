@@ -8,7 +8,7 @@
 
 use granny_core::curves::{grain_ms, shift_bytes, sync_end_ticks, sync_grain_ticks, CurveMode};
 use granny_core::dac::crush_mask;
-use granny_core::params::{ModDest, ModSource};
+use granny_core::params::{ModDest, ModSource, NoteMode};
 use granny_core::sample::SampleBuffer;
 use granny_core::scala::ScalaTuning;
 use granny_core::tables::NATIVE_RATE;
@@ -45,7 +45,7 @@ pub const POLY_MOD_START: u32 = 6;
 pub const POLY_MOD_END: u32 = 7;
 
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
-pub enum NoteMode {
+pub enum NoteModeParam {
     /// The firmware's TUNED bit set: notes set the playback rate.
     #[id = "pitch"]
     #[name = "pitch"]
@@ -54,6 +54,11 @@ pub enum NoteMode {
     #[id = "slice"]
     #[name = "slice"]
     Slice,
+    /// Both at once: the slice channel picks slices, every other channel plays in tune. The
+    /// hardware has one TUNED bit for the whole instrument and so cannot do this.
+    #[id = "split"]
+    #[name = "split by channel"]
+    Split,
 }
 
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
@@ -369,7 +374,10 @@ pub struct MaterParams {
 
     // --- the setting bits ---
     #[id = "notemode"]
-    pub note_mode: EnumParam<NoteMode>,
+    pub note_mode: EnumParam<NoteModeParam>,
+    /// 1..=16. Only read in split mode; every channel but this one plays in tune.
+    #[id = "slicechan"]
+    pub slice_channel: IntParam,
     #[id = "legato"]
     pub legato: BoolParam,
     #[id = "repeat"]
@@ -507,7 +515,10 @@ impl MaterParams {
                 }))
                 .with_string_to_value(parse_leading_int()),
 
-            note_mode: EnumParam::new("note mode", NoteMode::Pitch),
+            note_mode: EnumParam::new("note mode", NoteModeParam::Pitch),
+            // 1-based here and 0-based in the engine, because that is how each end counts. Ten is
+            // the drum channel, which is where a slice lane usually comes from.
+            slice_channel: IntParam::new("slice channel", 10, IntRange::Linear { min: 1, max: 16 }),
             legato: BoolParam::new("legato", false),
             repeat: BoolParam::new("repeat", true),
             sync: BoolParam::new("sync", true),
@@ -626,6 +637,11 @@ impl MaterParams {
         }
     }
 
+    /// The engine's note mode, with the slice channel folded into it.
+    pub fn note_mode(&self) -> NoteMode {
+        resolve_note_mode(self.note_mode.value(), self.slice_channel.value())
+    }
+
     pub fn pitch_table(&self) -> PitchTable {
         match self.pitch_table.value() {
             PitchTableParam::Hardware => PitchTable::Hardware,
@@ -655,6 +671,20 @@ impl MaterParams {
         } else {
             None
         }
+    }
+}
+
+/// Fold the two parameters into the one the engine reads.
+///
+/// The surface counts MIDI channels from one, the way every controller labels them; the engine takes
+/// them as they arrive on the wire, from zero.
+fn resolve_note_mode(mode: NoteModeParam, slice_channel: i32) -> NoteMode {
+    match mode {
+        NoteModeParam::Pitch => NoteMode::Tuned,
+        NoteModeParam::Slice => NoteMode::Sliced,
+        NoteModeParam::Split => NoteMode::Split {
+            slice_channel: (slice_channel.clamp(1, 16) - 1) as u8,
+        },
     }
 }
 
@@ -716,6 +746,42 @@ mod tests {
             29 * 13,
             "below 30 ms it moves three at a time"
         );
+    }
+
+    #[test]
+    fn the_note_mode_carries_the_slice_channel_counted_from_zero() {
+        use NoteModeParam::*;
+
+        // Only a split reads the channel; the other two are the whole instrument either way.
+        assert_eq!(resolve_note_mode(Pitch, 10), NoteMode::Tuned);
+        assert_eq!(resolve_note_mode(Slice, 10), NoteMode::Sliced);
+
+        assert_eq!(
+            resolve_note_mode(Split, 1),
+            NoteMode::Split { slice_channel: 0 }
+        );
+        assert_eq!(
+            resolve_note_mode(Split, 16),
+            NoteMode::Split { slice_channel: 15 }
+        );
+        // Out of range clamps rather than wrapping onto some other channel.
+        assert_eq!(
+            resolve_note_mode(Split, 99),
+            NoteMode::Split { slice_channel: 15 }
+        );
+        assert_eq!(
+            resolve_note_mode(Split, 0),
+            NoteMode::Split { slice_channel: 0 }
+        );
+    }
+
+    #[test]
+    fn the_defaults_leave_the_instrument_in_one_piece() {
+        use crate::shared::Shared;
+
+        let params = MaterParams::new(Arc::new(Shared::default()));
+        assert_eq!(params.note_mode(), NoteMode::Tuned);
+        assert_eq!(params.slice_channel.value(), 10, "the drum channel");
     }
 
     #[test]

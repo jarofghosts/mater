@@ -7,7 +7,7 @@
 //!
 //! Deliberately uses a hand-rolled WAV reader and writer so `granny-core` keeps zero dependencies.
 
-use granny_core::params::{Fidelity, HwParams, ModSlot, MOD_SLOTS};
+use granny_core::params::{Fidelity, HwParams, ModSlot, NoteMode, MOD_SLOTS};
 use granny_core::{Engine, Expression, Scene, TransportInfo, Tuning, VoiceKey};
 use std::collections::HashMap;
 use std::env;
@@ -69,7 +69,12 @@ fn main() -> ExitCode {
         shift: opts.int("shift", 128),
         start: opts.int("start", 0),
         end: opts.int("end", 1022),
-        tuned: opts.flag("tuned", true),
+        // Everything here plays on one channel, so a split has nothing to split.
+        note_mode: if opts.flag("tuned", true) {
+            NoteMode::Tuned
+        } else {
+            NoteMode::Sliced
+        },
         legato: opts.flag("legato", false),
         repeat: opts.flag("repeat", true),
         sync: opts.flag("sync", false),

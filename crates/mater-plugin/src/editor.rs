@@ -8,6 +8,7 @@
 use granny_core::curves::{grain_ms, shift_bytes};
 use granny_core::pitch::describe_note;
 use granny_core::sample::SampleBuffer;
+use granny_core::tables::SLICE_COUNT;
 use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::*;
 use nih_plug_egui::{
@@ -19,7 +20,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::display;
-use crate::params::{describe_sample, MaterParams, DEFAULT_WINDOW, UI_SCALES};
+use crate::params::{describe_sample, MaterParams, NoteModeParam, DEFAULT_WINDOW, UI_SCALES};
 use crate::project;
 use crate::shared::{Shared, PLAYHEAD_IDLE};
 use crate::{Mater, Task};
@@ -797,6 +798,30 @@ fn waveform(
     );
     painter.rect_filled(loop_rect, 0.0, visuals.faint_bg_color);
 
+    // Where the sixty slices fall, for the modes that play them. Drawn under the waveform and
+    // barely tinted: sixty divisions is a lot of ink for something that is only ever a reference,
+    // and the loop handles are what the eye should still find first.
+    if matches!(
+        params.note_mode.value(),
+        NoteModeParam::Slice | NoteModeParam::Split
+    ) {
+        // Measured the way the engine measures it, header offset and truncating division included,
+        // rather than laid out in sixtieths of the picture: these mark where a note actually drops
+        // the read head, and on a short sample the two are not quite the same place.
+        let granule = sample.granule(true);
+        let stroke = egui::Stroke::new(
+            metrics.at(1.0),
+            visuals.weak_text_color().gamma_multiply(0.4),
+        );
+        for index in 1..SLICE_COUNT {
+            let x = x_at(sample.position_fraction(index * granule));
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                stroke,
+            );
+        }
+    }
+
     // Peaks.
     let peaks = sample.peaks();
     let mid_y = rect.center().y;
@@ -1118,15 +1143,7 @@ fn radio<T: Enum + PartialEq + Copy + 'static>(
     metrics: Metrics,
 ) {
     let names = T::variants();
-    // Out to the right edge of what is on screen, not of the layout: at a large ui scale the row is
-    // wider than the window, and a variant beyond the edge cannot be read or clicked. Every one of
-    // these sits in the scrolling pane, whose bar is drawn over that edge rather than inside it.
-    let room = (ui.clip_rect().right() - ui.max_rect().left() - ui.spacing().scroll.bar_width)
-        .min(ui.max_rect().width())
-        .max(metrics.span(ui, 1));
-    let columns = metrics
-        .columns_for(ui, radio_row_width(ui, names))
-        .min(metrics.columns_in(ui, room));
+    let columns = radio_columns(ui, names, metrics);
 
     cell(
         ui,
@@ -1212,6 +1229,39 @@ fn dropdown<T: Enum + PartialEq + Copy + 'static>(
         });
 }
 
+/// [`radio`] in a cell that can be greyed out.
+///
+/// [`dimmed`] wraps by hand when less than a whole column is left, which is the right question for a
+/// one-column cell and the wrong one for a row of radio buttons: that one sizes itself to its variant
+/// names and may want three. Measuring it first is what keeps a greyed row from running off the edge.
+fn dimmed_radio<T: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+    metrics: Metrics,
+) {
+    let columns = radio_columns(ui, T::variants(), metrics);
+    if ui.available_rect_before_wrap().width() < metrics.span(ui, columns) {
+        ui.end_row();
+    }
+    ui.add_enabled_ui(enabled, |ui| radio(ui, label, param, setter, metrics));
+}
+
+/// How many whole columns a row of radio buttons needs, and how many it is allowed.
+fn radio_columns(ui: &egui::Ui, names: &[&str], metrics: Metrics) -> usize {
+    // Out to the right edge of what is on screen, not of the layout: at a large ui scale the row is
+    // wider than the window, and a variant beyond the edge cannot be read or clicked. Every one of
+    // these sits in the scrolling pane, whose bar is drawn over that edge rather than inside it.
+    let room = (ui.clip_rect().right() - ui.max_rect().left() - ui.spacing().scroll.bar_width)
+        .min(ui.max_rect().width())
+        .max(metrics.span(ui, 1));
+    metrics
+        .columns_for(ui, radio_row_width(ui, names))
+        .min(metrics.columns_in(ui, room))
+}
+
 /// How wide a row of radio buttons wants to be, by the same arithmetic the widget itself does.
 ///
 /// Measured rather than guessed, because the answer moves with the ui scale and with how long the
@@ -1273,9 +1323,15 @@ fn knobs(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, met
 }
 
 fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, metrics: Metrics) {
+    let split = params.note_mode.value() == NoteModeParam::Split;
+
     ui.label(egui::RichText::new("settings").strong());
     ui.horizontal_wrapped(|ui| {
         radio(ui, "note mode", &params.note_mode, setter, metrics);
+        // Only a split reads it; the other two modes treat every channel alike.
+        dimmed(ui, split, metrics, |ui| {
+            labelled(ui, "slice channel", &params.slice_channel, setter, metrics);
+        });
         toggle(ui, "legato", &params.legato, setter, metrics);
         toggle(ui, "repeat", &params.repeat, setter, metrics);
         toggle(ui, "sync", &params.sync, setter, metrics);
@@ -1295,6 +1351,21 @@ fn settings(ui: &mut egui::Ui, params: &Arc<MaterParams>, setter: &ParamSetter, 
         labelled(ui, "voices", &params.voices, setter, metrics);
         toggle(ui, "hardware cc map", &params.hardware_cc, setter, metrics);
     });
+
+    // What a split actually does, said where it is chosen — including the one knob it makes
+    // ambiguous, since rate means different things to the two lanes and there is only one of it.
+    if split {
+        ui.label(
+            egui::RichText::new(format!(
+                "channel {} plays slices; every other channel plays in tune — rate is a transpose \
+                 on the tuned lane and the playback rate on the slice one, and mpe is off while \
+                 the split owns the channel numbers",
+                params.slice_channel.value()
+            ))
+            .weak()
+            .italics(),
+        );
+    }
 }
 
 /// Say plainly what the sample was detected as, and what note therefore plays it untransposed.
@@ -1340,6 +1411,9 @@ fn tuning(
     sample: &SampleBuffer,
     metrics: Metrics,
 ) {
+    // A split routes by channel itself, so the zone is forced off for as long as it is chosen.
+    let zoned = params.note_mode.value() != NoteModeParam::Split;
+
     ui.label(egui::RichText::new("tuning").strong());
     // The same grid as the sections above, which the long enum names fit by spanning columns rather
     // than by being cut into rows of their own.
@@ -1354,8 +1428,12 @@ fn tuning(
         labelled(ui, "root adjust", &params.root_adjust, setter, metrics);
         radio(ui, "pitch table", &params.pitch_table, setter, metrics);
         radio(ui, "snap", &params.snap, setter, metrics);
-        radio(ui, "mpe", &params.mpe_zone, setter, metrics);
-        labelled(ui, "mpe bend range", &params.bend_range, setter, metrics);
+        dimmed_radio(ui, zoned, "mpe", &params.mpe_zone, setter, metrics);
+        // Only the member-channel range goes with it: with the zone off every channel is measured
+        // against the plain midi range below, which is exactly what the split leaves behind.
+        dimmed(ui, zoned, metrics, |ui| {
+            labelled(ui, "mpe bend range", &params.bend_range, setter, metrics);
+        });
         labelled(
             ui,
             "midi bend range",

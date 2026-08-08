@@ -311,7 +311,7 @@ pub fn fallback_voice_id(channel: u8, note: u8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::MOD_SLOTS;
+    use crate::params::{NoteMode, MOD_SLOTS};
 
     fn sample(len: usize) -> SampleBuffer {
         // A ramp, so position changes are audible in the output.
@@ -350,12 +350,25 @@ mod tests {
         }
     }
 
-    fn key(note: u8) -> VoiceKey {
+    fn key_on(channel: u8, note: u8) -> VoiceKey {
         VoiceKey {
-            voice_id: fallback_voice_id(0, note),
-            channel: 0,
+            voice_id: fallback_voice_id(channel, note),
+            channel,
             note,
         }
+    }
+
+    fn key(note: u8) -> VoiceKey {
+        key_on(0, note)
+    }
+
+    /// The voice sounding on a channel, for the tests that hold notes on more than one.
+    fn voice_on(engine: &Engine, channel: u8) -> &Voice {
+        engine
+            .voices()
+            .iter()
+            .find(|v| v.active && v.key.channel == channel)
+            .unwrap_or_else(|| panic!("nothing sounding on channel {channel}"))
     }
 
     fn render(engine: &mut Engine, fixture: &Fixture, samples: usize) -> (Vec<f32>, Vec<f32>) {
@@ -458,6 +471,122 @@ mod tests {
             .collect();
         for pair in rates.windows(2) {
             assert!(pair[0] != pair[1], "each note should have its own rate");
+        }
+    }
+
+    #[test]
+    fn split_slices_one_channel_and_tunes_the_rest() {
+        // The whole point of the mode: two voices reading the same file at the same moment, one
+        // walking slices and one in tune, told apart only by the channel their notes arrived on.
+        let mut fixture = Fixture::new();
+        fixture.params.note_mode = NoteMode::Split { slice_channel: 9 };
+        let mut engine = Engine::new(16, 48_000.0);
+        engine.note_on(&fixture.scene(), key_on(9, 62), 1.0, Expression::default());
+        engine.note_on(&fixture.scene(), key_on(0, 62), 1.0, Expression::default());
+        render(&mut engine, &fixture, 480);
+
+        let sliced = voice_on(&engine, 9);
+        let tuned = voice_on(&engine, 0);
+
+        // Sliced takes its rate from the RATE knob, which defaults to the native rate; tuned is
+        // three semitones above the native note and so must run faster.
+        assert!(
+            (sliced.rate_hz() - 22_050.0).abs() < 1.0,
+            "slice lane should play at the rate knob's 22050 hz, not {}",
+            sliced.rate_hz()
+        );
+        assert!(
+            tuned.rate_hz() > sliced.rate_hz() * 1.1,
+            "tuned lane at {} hz should be well above the slice lane's {}",
+            tuned.rate_hz(),
+            sliced.rate_hz()
+        );
+
+        // And the read heads: note 62 is slice 39 of 60, while the tuned voice obeys START.
+        let position = sliced.position_fraction(&fixture.sample);
+        assert!(
+            (position - 39.0 / 60.0).abs() < 0.01,
+            "slice lane started at {position} rather than slice 39"
+        );
+        assert!(
+            tuned.position_fraction(&fixture.sample) < 0.01,
+            "tuned lane should start at START, which is 0"
+        );
+    }
+
+    #[test]
+    fn every_unnamed_channel_is_tuned_in_split() {
+        // Tuned is the fallback, so naming one channel is all it takes; nothing else moves.
+        let mut fixture = Fixture::new();
+        fixture.params.note_mode = NoteMode::Split { slice_channel: 9 };
+        let mut engine = Engine::new(16, 48_000.0);
+        for channel in [0, 5, 15] {
+            engine.note_on(
+                &fixture.scene(),
+                key_on(channel, 62),
+                1.0,
+                Expression::default(),
+            );
+        }
+        render(&mut engine, &fixture, 480);
+
+        let reference = voice_on(&engine, 0).rate_hz();
+        for channel in [5, 15] {
+            let voice = voice_on(&engine, channel);
+            assert_eq!(voice.rate_hz(), reference);
+            assert!(voice.position_fraction(&fixture.sample) < 0.01);
+        }
+    }
+
+    #[test]
+    fn slice_mode_puts_each_note_at_its_own_slice() {
+        let mut fixture = Fixture::new();
+        fixture.params.note_mode = NoteMode::Sliced;
+        let mut engine = Engine::new(16, 48_000.0);
+        engine.note_on(&fixture.scene(), key(30), 1.0, Expression::default());
+        engine.note_on(&fixture.scene(), key(70), 1.0, Expression::default());
+        render(&mut engine, &fixture, 480);
+
+        let positions: Vec<f32> = engine
+            .voices()
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.position_fraction(&fixture.sample))
+            .collect();
+        let rates: Vec<f32> = engine
+            .voices()
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.rate_hz())
+            .collect();
+
+        assert_eq!(rates[0], rates[1], "the rate knob sets the pitch for both");
+        assert!(
+            (positions[0] - positions[1]).abs() > 0.5,
+            "notes 30 and 70 are 40 slices apart, not {positions:?}"
+        );
+    }
+
+    #[test]
+    fn pitch_and_slice_modes_ignore_the_channel() {
+        // Neither whole-instrument mode reads the channel, and adding one that does must not have
+        // changed that.
+        for mode in [NoteMode::Tuned, NoteMode::Sliced] {
+            let mut fixture = Fixture::new();
+            fixture.params.note_mode = mode;
+            let mut engine = Engine::new(16, 48_000.0);
+            engine.note_on(&fixture.scene(), key_on(0, 62), 1.0, Expression::default());
+            engine.note_on(&fixture.scene(), key_on(9, 62), 1.0, Expression::default());
+            render(&mut engine, &fixture, 480);
+
+            let first = voice_on(&engine, 0);
+            let second = voice_on(&engine, 9);
+            assert_eq!(first.rate_hz(), second.rate_hz(), "{mode:?}");
+            assert_eq!(
+                first.position_fraction(&fixture.sample),
+                second.position_fraction(&fixture.sample),
+                "{mode:?}"
+            );
         }
     }
 

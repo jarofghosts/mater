@@ -23,7 +23,7 @@ mod shared;
 
 use loader::StoredScale;
 use mpe::{MpeState, Target, CC_SLIDE, CC_SUSTAIN};
-use params::{MaterParams, NoteMode};
+use params::{MaterParams, MpeZoneParam, NoteModeParam};
 use shared::{Shared, MAX_VOICES, PLAYHEAD_IDLE};
 
 /// Largest run of samples rendered without re-reading parameters.
@@ -118,7 +118,7 @@ impl Mater {
             start: knob(6, p.start.value(), 1023),
             end: knob(7, p.end.value(), 1023),
 
-            tuned: p.note_mode.value() == NoteMode::Pitch,
+            note_mode: p.note_mode(),
             legato: p.legato.value(),
             repeat: p.repeat.value(),
             sync: p.sync.value(),
@@ -497,7 +497,13 @@ impl Plugin for Mater {
             self.engine.set_voice_capacity(requested_voices);
             context.set_current_voice_capacity(requested_voices as u32);
         }
-        self.mpe.set_zone(self.params.mpe_zone.value());
+        // A split routes by channel and an MPE zone hands every note a channel of its own; the two
+        // cannot both own the channel number, so the split wins and the input is read as plain MIDI.
+        let zone = match self.params.note_mode.value() {
+            NoteModeParam::Split => MpeZoneParam::Off,
+            _ => self.params.mpe_zone.value(),
+        };
+        self.mpe.set_zone(zone);
         self.mpe.set_ranges(
             self.params.bend_range.value() as f32,
             self.params.master_bend_range.value() as f32,

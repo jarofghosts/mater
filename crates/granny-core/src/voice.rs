@@ -239,7 +239,9 @@ impl Voice {
     /// Re-read every parameter, exactly as `renderTweaking` does on each pass of the UI loop.
     fn recompute(&mut self, ctx: &TickCtx, rng: &mut Xorshift96) {
         let r = resolve(ctx.params, ctx.mods, &self.expr);
-        let slice_mode = !ctx.params.tuned;
+        // Which side of the TUNED bit this voice is on, asked per channel: in a split the answer
+        // differs between two voices reading the same block of the same file.
+        let slice_mode = !ctx.params.note_mode.tuned(self.key.channel);
 
         self.rate_hz = if slice_mode {
             // Untuned: the note picks a slice and the RATE knob sets the pitch.

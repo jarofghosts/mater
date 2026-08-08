@@ -47,7 +47,7 @@ pub mod voice;
 
 pub use engine::{fallback_voice_id, Engine, Scene, TransportInfo};
 pub use params::{
-    Expression, Fidelity, HwParams, ModDest, ModSlot, ModSource, Resolved, MOD_SLOTS,
+    Expression, Fidelity, HwParams, ModDest, ModSlot, ModSource, NoteMode, Resolved, MOD_SLOTS,
 };
 pub use sample::SampleBuffer;
 pub use tuning::{PitchTable, Tuning};

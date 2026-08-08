@@ -48,10 +48,17 @@ All eight support CLAP polyphonic modulation.
 ### Settings
 
 `Note Mode` is the firmware's TUNED bit: **Pitch** (notes set the rate, Start sets the loop start) or
-**Slice** (notes select one of 60 slices, the Rate knob sets the pitch). `Legato`, `Repeat`, `Sync`
-and `Random Shift` are the remaining setting bits. `Hold`, `Level` and `Voices` replace hardware
-gestures, and `Velocity Sens` scales what velocity costs the envelope. `Sync` follows the host
-transport where the hardware follows MIDI clock.
+**Slice** (notes select one of 60 slices, the Rate knob sets the pitch). **Split by channel** is
+both at once, which the hardware cannot do because it has one TUNED bit for the whole instrument:
+notes on `Slice Channel` pick slices and every other channel plays in tune, out of the same file at
+the same time. Two things are worth knowing before reaching for it. There is only one Rate knob, and
+it is a transpose for the tuned lane and the playback rate for the slice one, so it moves both at
+once. And End is measured in 1/1024ths of the file on the tuned lane but 1/60ths on the slice one —
+the default 1022 means "end of sample" either way, but a middle value lands somewhere quite
+different on each. The MPE zone is ignored while a split is chosen; see below. `Legato`, `Repeat`,
+`Sync` and `Random Shift` are the remaining setting bits. `Hold`, `Level` and `Voices` replace
+hardware gestures, and `Velocity Sens` scales what velocity costs the envelope. `Sync` follows the
+host transport where the hardware follows MIDI clock.
 
 ## Matching the keyboard
 
@@ -84,7 +91,10 @@ and are re-read every control tick, exactly as the firmware's `renderTweaking` d
 - **MPE** — lower or upper zone, or off for plain global MIDI. Per-channel bend, channel pressure
   and CC74. Two bend ranges, as MPE specifies: `mpe bend range` (±48 by default) for member
   channels, and `midi bend range` (±2) for the master channel and for plain MIDI with the zone off.
-  Either follows RPN 0 for its own class of channel when `Follow RPN 0` is on.
+  Either follows RPN 0 for its own class of channel when `Follow RPN 0` is on. A zone hands every
+  note a channel of its own and a split routes by channel, so the two cannot both own the channel
+  number: in split mode the zone is forced off and its controls go grey, and the input is read as
+  plain MIDI.
 - **Snap** — quantise the final pitch, after bend, to 24-EDO (quarter tones) or 12-EDO.
 - **Root** — everything above is relative to the detected sample root, so bends and scale steps are
   measured from a pitch that is actually correct.
@@ -123,7 +133,10 @@ Two further hardware behaviours are reproduced without a switch, because they ar
 
 **Save project…** and **Load project…** sit next to the title; the sample controls follow them.
 The waveform is the interface: drag the `s` and `e` handles to move the loop points, the shaded band
-at the loop start is one grain, and every sounding voice draws its own playhead. Anything that is
+at the loop start is one grain, and every sounding voice draws its own playhead. In Slice and Split
+the sixty slice divisions are drawn faintly behind the waveform, at the byte offsets a note actually
+drops the read head — they are a reference, not a control, so they stay under the peaks and out of
+the way. Anything that is
 simply on or off is a checkbox, everything with a range is a slider, and a choice between named
 alternatives is a row of radio buttons with every option named — note mode, pitch table, snap, the
 MPE zone and curve maps all fit on one line that way. The mod matrix does not: six sources against
@@ -132,7 +145,8 @@ sources and destinations are drop-downs, and the three slots sit in a grid with 
 
 A control that cannot do anything is greyed out rather than left to look live. Grain size at zero
 switches the granular engine off, which leaves both `shift` and `random shift` inert — so both go
-grey, instead of `shift` reading out a byte figure it will not act on.
+grey, instead of `shift` reading out a byte figure it will not act on. The same goes for
+`slice channel` outside a split, and for the MPE controls inside one.
 
 Whatever size the window ends up, the interface fills it: the controls take the height they need
 and the waveform takes everything left over, so a tall window is a taller view of the sample rather
@@ -195,8 +209,9 @@ audio thread — the displayed parameter will not move.
 - **Instant loop.** It is a performance gesture for capturing a sub-loop live. With Start, End and
   Repeat all available as parameters, a static version of it would add a control without adding a
   capability.
-- **Recording, MIDI channel selection, the display and the button combinations.** All artefacts of
-  having six buttons and four digits.
+- **Recording, MIDI channel filtering, the display and the button combinations.** All artefacts of
+  having six buttons and four digits. Every channel plays; the only thing a channel number selects
+  is which lane a note lands in under `Split by channel`.
 
 ## Layout
 

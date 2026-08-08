@@ -24,10 +24,39 @@ pub const KNOB_RANGES: [f32; KNOBS] = [
     1023.0, // end
 ];
 
+/// The firmware's TUNED bit, which here can also be split by MIDI channel.
+///
+/// On the hardware TUNED is one bit for the whole instrument. This engine is polyphonic and every
+/// voice already carries the channel its note arrived on, so the bit can also be held one way on a
+/// single channel and the other way everywhere else — a slice lane and a tuned lane out of the same
+/// file at once, which the instrument has no way to express.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum NoteMode {
+    /// TUNED set everywhere: notes set the playback rate and START sets the loop start.
+    #[default]
+    Tuned,
+    /// TUNED clear everywhere: notes select one of 60 slices and the RATE knob sets the pitch.
+    Sliced,
+    /// TUNED clear on one channel and set on every other. Tuned is the fallback, so a channel is
+    /// sliced only by being named here.
+    Split { slice_channel: u8 },
+}
+
+impl NoteMode {
+    /// Whether a note arriving on this channel is tuned. Channels are 0-based, as MIDI delivers them.
+    pub fn tuned(self, channel: u8) -> bool {
+        match self {
+            Self::Tuned => true,
+            Self::Sliced => false,
+            Self::Split { slice_channel } => channel != slice_channel,
+        }
+    }
+}
+
 /// The eight knobs and the setting bits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HwParams {
-    /// 0..=1023. Playback rate in slice mode; a transpose in pitch mode (see [`Self::tuned`]).
+    /// 0..=1023. Playback rate in slice mode; a transpose in pitch mode (see [`Self::note_mode`]).
     pub rate: u16,
     /// 0..=127. OR-mask bitcrush depth.
     pub crush: u16,
@@ -44,9 +73,9 @@ pub struct HwParams {
     /// 0..=1023. Loop end; 1000 and above means "the end of the sample".
     pub end: u16,
 
-    /// The firmware's TUNED bit. On: notes set pitch and START sets the loop start. Off: notes
-    /// select one of 60 slices and the RATE knob sets the pitch.
-    pub tuned: bool,
+    /// The firmware's TUNED bit: whether notes set pitch or pick a slice. Per channel, so both can
+    /// be true of the same block.
+    pub note_mode: NoteMode,
     /// LEGATO: a new note on a channel that is already sounding retunes it instead of retriggering.
     pub legato: bool,
     /// REPEAT: loop between start and end instead of playing once.
@@ -78,7 +107,7 @@ impl Default for HwParams {
             shift: 128,
             start: 0,
             end: 1022,
-            tuned: true,
+            note_mode: NoteMode::Tuned,
             legato: false,
             repeat: true,
             sync: true,
@@ -296,8 +325,25 @@ mod tests {
         assert_eq!((p.rate, p.crush, p.attack, p.release), (877, 0, 0, 0));
         assert_eq!((p.grain, p.shift, p.start, p.end), (0, 128, 0, 1022));
         // SETTING = 13 = 0b01101
-        assert!(p.tuned && p.repeat && p.sync);
+        assert_eq!(p.note_mode, NoteMode::Tuned);
+        assert!(p.repeat && p.sync);
         assert!(!p.legato && !p.random_shift);
+    }
+
+    #[test]
+    fn a_whole_instrument_note_mode_ignores_the_channel() {
+        for channel in 0..16 {
+            assert!(NoteMode::Tuned.tuned(channel));
+            assert!(!NoteMode::Sliced.tuned(channel));
+        }
+        assert_eq!(NoteMode::default(), NoteMode::Tuned);
+    }
+
+    #[test]
+    fn splitting_slices_the_named_channel_and_nothing_else() {
+        let mode = NoteMode::Split { slice_channel: 9 };
+        let sliced: Vec<u8> = (0..16).filter(|&c| !mode.tuned(c)).collect();
+        assert_eq!(sliced, vec![9]);
     }
 
     #[test]
