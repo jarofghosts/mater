@@ -30,6 +30,25 @@ const ACCENT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(255, 187, 112);
 /// And dropped, for fills that sit behind text — slider bars, selected ranges.
 const ACCENT_FILL: egui::Color32 = egui::Color32::from_rgb(122, 60, 10);
 
+/// Normal text, against the near-black everything here is painted on.
+///
+/// egui's dark theme puts this at gray(140), which is about 5:1 — a quarter of the contrast a host
+/// carries on its own chrome, and low enough that a parameter name reads as faint at any size. It
+/// was the reason this interface seemed to want scaling up: the names were not too small so much as
+/// too dim, and making them larger was the only lever that touched them. This is about 10:1.
+///
+/// Section headings escaped it by being `strong()`, which is white whatever this says — which is
+/// why they looked right while the labels beneath them did not.
+const TEXT: egui::Color32 = egui::Color32::from_gray(200);
+/// What dimmed text is tinted halfway towards.
+///
+/// egui fades a disabled `Ui` — and anything `weak()` — halfway to
+/// [`egui::Visuals::fade_out_to_color`], whose only source is `noninteractive.weak_bg_fill`. At the
+/// gray(27) it ships as, that target *is* the background, so a dimmed parameter landed at 2.2:1:
+/// greyed past reading rather than out of the way. Lifting the target leaves dimmed text at about
+/// the contrast normal text used to have, which is the right end of "clearly secondary".
+const TEXT_FADE: egui::Color32 = egui::Color32::from_gray(75);
+
 /// The share of the window the waveform takes when the controls want everything else, and the
 /// bounds that share is held within. Given a window with room to spare it takes more — see
 /// [`wave_height`].
@@ -42,7 +61,13 @@ const SECTION_GAP: f32 = 6.0;
 const HANDLE_GRAB_PX: f32 = 10.0;
 /// Width of one column of the parameter grid. Every cell is a whole number of these, so however
 /// the rows wrap they still line up.
-const CELL_WIDTH: f32 = 190.0;
+///
+/// Wide enough to hold the longest caption line whole at the size [`text_styles`] draws it. The
+/// worst of them is grain size, whose name and `100 (1666 ms, 288 ticks)` came to about 162 of the
+/// 190 this used to be while the reading was set in 9 points, and to within a couple of points of
+/// the whole column at 10.5. The reading truncates rather than overflowing, so what that width
+/// bought was a tooltip where the number used to be.
+const CELL_WIDTH: f32 = 215.0;
 const CELL_HEIGHT: f32 = 42.0;
 /// Height of the control inside a cell, and of the line above it that names the parameter and
 /// reads its value. That line is a fixed height because clicking a reading to type an exact value
@@ -358,17 +383,28 @@ fn apply_style(ctx: &egui::Context, scale: f32) {
     });
 }
 
-/// egui's default text styles, scaled.
+/// egui's default text styles, a little larger, scaled.
+///
+/// `Small` carries most of the interface rather than the captions it is named for — every parameter
+/// name and every value reading is set in it — and egui's 9 points for that is a caption size, small
+/// enough on a laptop panel to be hard work. The sizes here are a step up from the defaults so that
+/// the text is readable at a scale whose *window* still fits such a screen: `ui scale` grows the
+/// layout and the window with it, so turning it up is no answer when there is no room to grow into.
+///
+/// The layout is not scaled to match — a cell is the same height, and the same number of columns
+/// fit the window it opens at — so this is text taking up more of the room already set aside for it.
+/// [`CELL_WIDTH`] is the one size that had to give, being the width the readings are measured
+/// against.
 fn text_styles(scale: f32) -> BTreeMap<egui::TextStyle, egui::FontId> {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::{FontId, TextStyle};
 
     [
-        (TextStyle::Small, FontId::new(9.0 * scale, Proportional)),
-        (TextStyle::Body, FontId::new(12.5 * scale, Proportional)),
-        (TextStyle::Button, FontId::new(12.5 * scale, Proportional)),
+        (TextStyle::Small, FontId::new(10.5 * scale, Proportional)),
+        (TextStyle::Body, FontId::new(13.5 * scale, Proportional)),
+        (TextStyle::Button, FontId::new(13.5 * scale, Proportional)),
         (TextStyle::Heading, FontId::new(18.0 * scale, Proportional)),
-        (TextStyle::Monospace, FontId::new(12.0 * scale, Monospace)),
+        (TextStyle::Monospace, FontId::new(13.0 * scale, Monospace)),
     ]
     .into()
 }
@@ -410,6 +446,10 @@ fn paint(visuals: &mut egui::Visuals, scale: f32) {
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(scale, ACCENT);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(scale, ACCENT_BRIGHT);
     visuals.resize_corner_size = 12.0 * scale;
+    // Text last, and both of these rather than one: lifting normal text without lifting what dimmed
+    // text fades towards would only widen the gap between them. See [`TEXT`] and [`TEXT_FADE`].
+    visuals.widgets.noninteractive.fg_stroke.color = TEXT;
+    visuals.widgets.noninteractive.weak_bg_fill = TEXT_FADE;
 }
 
 fn handle_dropped_files(
@@ -645,6 +685,12 @@ fn waveform(
     );
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
+    // The painter is given fonts by hand, so take them from the same styles the widgets below
+    // resolve rather than naming sizes here — those would be the only text in the editor that
+    // [`text_styles`] did not move. Already scaled by the time they come back, so unlike every
+    // other size in this function they do not go through [`Metrics::at`].
+    let prompt_font = egui::TextStyle::Body.resolve(ui.style());
+    let handle_font = egui::TextStyle::Monospace.resolve(ui.style());
 
     painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
 
@@ -653,7 +699,7 @@ fn waveform(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "no sample — click “load sample…” or drop a file here",
-            egui::FontId::proportional(metrics.at(15.0)),
+            prompt_font,
             visuals.weak_text_color(),
         );
         return;
@@ -735,7 +781,7 @@ fn waveform(
             egui::pos2(x + metrics.at(3.0), rect.top() + metrics.at(2.0)),
             egui::Align2::LEFT_TOP,
             label,
-            egui::FontId::monospace(metrics.at(11.0)),
+            handle_font.clone(),
             ACCENT_BRIGHT,
         );
     }
