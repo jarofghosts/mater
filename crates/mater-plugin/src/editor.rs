@@ -18,7 +18,8 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::params::{describe_sample, MaterParams, UI_SCALES};
+use crate::display;
+use crate::params::{describe_sample, MaterParams, DEFAULT_WINDOW, UI_SCALES};
 use crate::project;
 use crate::shared::{Shared, PLAYHEAD_IDLE};
 use crate::{Mater, Task};
@@ -170,6 +171,7 @@ impl Editor for HostDpi {
         let accepted = self.inner.set_scale_factor(factor);
         if accepted {
             self.shared.host_dpi.store(factor, Ordering::Relaxed);
+            self.shared.host_dpi_reported.store(true, Ordering::Relaxed);
         }
         accepted
     }
@@ -217,13 +219,17 @@ pub fn create(
             shared.collect_garbage();
             handle_dropped_files(ctx, setter, &shared, &async_executor);
 
-            let host_dpi = shared.host_dpi.load(Ordering::Relaxed);
-            let scale = layout_scale(ui_scale(&params, host_dpi), host_dpi);
+            let host = HostScale::read(&shared);
+            let scale = layout_scale(ui_scale(&params, host, display_scale()), host.factor);
+            let opening = state.styled_for.is_none();
             if state.styled_for != Some(scale) {
                 apply_style(ctx, scale);
                 state.styled_for = Some(scale);
             }
             let metrics = Metrics { scale };
+            if opening {
+                size_for_scale(ctx, &egui_state, setter, scale);
+            }
 
             window(ctx, &egui_state, setter, egui::vec2(640.0, 480.0), |ui| {
                 egui::Frame::NONE
@@ -343,17 +349,55 @@ fn resize(ctx: &egui::Context, state: &Arc<EguiState>, setter: &ParamSetter, siz
     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
 }
 
+/// What the host has said about scaling, if it has said anything.
+///
+/// Both halves are needed: [`Self::factor`] starts at 1.0, which is also what a host scaling by
+/// 100 % would send, so the number alone cannot tell a host that means it from one that has never
+/// spoken. Those two want different answers — believe the first, go looking past the second.
+#[derive(Copy, Clone)]
+struct HostScale {
+    factor: f32,
+    reported: bool,
+}
+
+impl HostScale {
+    fn read(shared: &Shared) -> Self {
+        Self {
+            factor: shared.host_dpi.load(Ordering::Relaxed),
+            reported: shared.host_dpi_reported.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// How large the interface should draw itself, in the units the `ui scale` readout is in.
 ///
-/// Until someone sets it, it follows the host: a host scaling its own interface by 200 % has sized
-/// this window for a 200 % interface, and drawing a 100 % one inside it would leave the rest of the
-/// window empty. Once it is set by hand it is exactly that, on any host, for good.
-fn ui_scale(params: &MaterParams, host_dpi: f32) -> f32 {
-    match (params.ui_scale_is_set(), host_dpi > 0.0) {
-        (true, _) => params.ui_scale(),
-        (false, true) => host_dpi,
-        (false, false) => UI_SCALES[0],
+/// Three sources, in order of how much they know. A scale set by hand is exactly itself, on any
+/// host, for good. Failing that the host's own factor, because a host scaling its interface by 200 %
+/// has sized this window for a 200 % interface and drawing a 100 % one inside it would leave the
+/// rest of the window empty. Failing *that* — a host that never reports one, which is not rare —
+/// the desktop's own scaling, which is the same thing the host would have been passing on.
+///
+/// `display` is taken as an argument rather than read here so the choosing can be tested without an
+/// X server on the other end of it. See [`display_scale`].
+fn ui_scale(params: &MaterParams, host: HostScale, display: f32) -> f32 {
+    if params.ui_scale_is_set() {
+        params.ui_scale()
+    } else if host.reported && host.factor > 0.0 {
+        host.factor
+    } else {
+        display
     }
+}
+
+/// What the desktop says it is scaled by, held to the range the steps offer.
+///
+/// Clamped where the host's factor is not, because this one we went looking for: a desktop with an
+/// odd `Xft.dpi` should give an interface at the nearest size that makes sense rather than one drawn
+/// at six times the size or a sixth of it.
+fn display_scale() -> f32 {
+    display::system_scale()
+        .map(|scale| scale.clamp(UI_SCALES[0], UI_SCALES[UI_SCALES.len() - 1]))
+        .unwrap_or(UI_SCALES[0])
 }
 
 /// What one laid-out point is worth, with the host's DPI scaling divided back out of `ui scale`.
@@ -363,6 +407,11 @@ fn ui_scale(params: &MaterParams, host_dpi: f32) -> f32 {
 /// size would change whenever the host announced a new factor. Dividing it out means `ui scale` is
 /// a size on screen and nothing else moves it, while the host's factor still does what it is for —
 /// a window sized for the display, drawn at its full resolution.
+///
+/// Only the *host's* factor, and deliberately: where the host reports nothing this is 1.0 and
+/// nothing is divided out, which is right, because then nothing is multiplying the points either.
+/// A scaling found by asking the desktop ourselves has to be drawn rather than divided — see
+/// [`display`].
 fn layout_scale(ui_scale: f32, host_dpi: f32) -> f32 {
     if host_dpi > 0.0 {
         ui_scale / host_dpi
@@ -582,8 +631,8 @@ fn scale_control(
 ) {
     // The size being drawn, not what the layout is working in: the host's DPI scaling has been
     // divided out of that one, and reporting it would show 100 % on a host set to 200 %.
-    let host_dpi = shared.host_dpi.load(Ordering::Relaxed);
-    let scale = ui_scale(params, host_dpi);
+    let host = HostScale::read(shared);
+    let scale = ui_scale(params, host, display_scale());
     // The nearest step, so a state saved by a future version with other steps still lands somewhere.
     let step = UI_SCALES
         .iter()
@@ -596,21 +645,30 @@ fn scale_control(
     }
 
     // This is the only thing that sets the size of the interface — see `layout_scale` — so say
-    // where the number came from while it is still the host's rather than anyone's choice.
+    // where the number came from. Both halves, always: the host's factor used to be named only
+    // while the scale was still following it, so the moment you set the scale by hand to work
+    // around the interface coming out wrong, the one number that says whether the host is scaling
+    // at all went out of reach. That is precisely when it is worth reading.
     ui.label(egui::RichText::new(format!("{:.0} %", scale * 100.0)).monospace())
-        .on_hover_text(match (params.ui_scale_is_set(), host_dpi) {
-            (true, _) => {
-                "how large the interface draws itself, saved with the instance".to_string()
+        .on_hover_text(format!(
+            "{}\n{}",
+            if params.ui_scale_is_set() {
+                "how large the interface draws itself, saved with the instance"
+            } else {
+                "how large the interface draws itself — following the scaling below until you \
+                 set it here, after which it is yours"
+            },
+            match (host.reported, display::system_scale()) {
+                (true, _) => format!("the host reports {:.0} % scaling", host.factor * 100.0),
+                (false, Some(display)) => format!(
+                    "the host reports no scaling of its own; the desktop's is {:.0} %",
+                    display * 100.0
+                ),
+                (false, None) => {
+                    "neither the host nor the desktop reports any scaling".to_string()
+                }
             }
-            (false, dpi) if dpi != 1.0 => format!(
-                "how large the interface draws itself — following the host's own scaling of \
-                 {:.0} % until you set it here, after which it is yours",
-                dpi * 100.0
-            ),
-            (false, _) => {
-                "how large the interface draws itself, saved with the instance".to_string()
-            }
-        });
+        ));
 
     let smaller = ui.add_enabled(step > 0, egui::Button::new("−"));
     if smaller.clicked() {
@@ -646,6 +704,24 @@ fn rescaled(size: (u32, u32), from: f32, to: f32) -> egui::Vec2 {
     }
     let ratio = to / from;
     egui::vec2(width * ratio, height * ratio)
+}
+
+/// Size a window nobody has chosen yet for the scale it is about to be drawn at.
+///
+/// Changing scale by the steps resizes the window with it — see [`rescale`] — because an interface
+/// drawn larger in the same window is one that no longer fits. A scale that arrives *without* a
+/// click gets no such resize, and a fresh instance under a host that reports nothing takes its scale
+/// from the desktop (see [`display`]). At a 200 % desktop that drew a 200 % interface into the
+/// 960 x 700 laid out for a 100 % one: header controls printed over each other, the grid down to two
+/// columns, everything below the knobs pushed out of sight.
+///
+/// Only a window still at exactly [`DEFAULT_WINDOW`] is touched — any other size was dragged there
+/// or restored from a project, and is theirs to keep. And only on opening, so that dragging a window
+/// down to that size is not undone under the pointer.
+fn size_for_scale(ctx: &egui::Context, state: &Arc<EguiState>, setter: &ParamSetter, scale: f32) {
+    if state.size() == DEFAULT_WINDOW {
+        resize(ctx, state, setter, rescaled(DEFAULT_WINDOW, 1.0, scale));
+    }
 }
 
 /// How tall the waveform draws, given the height left under the header and the height the controls
@@ -1445,6 +1521,17 @@ mod tests {
 
         assert!(editor.set_scale_factor(2.0));
         assert_eq!(shared.host_dpi.load(Ordering::Relaxed), 2.0);
+        assert!(shared.host_dpi_reported.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_host_that_never_announces_one_is_not_read_as_announcing_100_percent() {
+        // The stored factor starts at the same 1.0 a host scaling by 100 % would send, so only the
+        // flag can tell "the host says no scaling" from "the host has said nothing".
+        let (_editor, shared) = editor_over(true);
+
+        assert_eq!(shared.host_dpi.load(Ordering::Relaxed), 1.0);
+        assert!(!shared.host_dpi_reported.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -1455,6 +1542,9 @@ mod tests {
 
         assert!(!editor.set_scale_factor(2.0));
         assert_eq!(shared.host_dpi.load(Ordering::Relaxed), 1.0);
+        // And a refused one is not something to report either, or the tooltip would claim the host
+        // scales by 100 % on the strength of a factor that never took.
+        assert!(!shared.host_dpi_reported.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -1468,16 +1558,85 @@ mod tests {
         assert_eq!(layout_scale(1.5, 0.0), 1.5);
     }
 
+    /// A host that announced this factor, as against one that has said nothing.
+    fn announced(factor: f32) -> HostScale {
+        HostScale {
+            factor,
+            reported: true,
+        }
+    }
+
+    /// A host like Bitwig, which never calls `set_scale` at all. The factor it leaves behind is the
+    /// 1.0 it started at, which is exactly what makes the flag necessary.
+    const SILENT: HostScale = HostScale {
+        factor: 1.0,
+        reported: false,
+    };
+
     #[test]
     fn an_untouched_scale_follows_the_host_and_fills_the_window() {
         let params = MaterParams::new(Arc::new(Shared::default()));
 
         // The window a host at 200 % makes is twice the size, so the interface has to be too or
         // the difference is left empty. A layout scale of exactly 1 is that interface.
-        assert_eq!(ui_scale(&params, 2.0), 2.0);
-        assert_eq!(layout_scale(ui_scale(&params, 2.0), 2.0), 1.0);
+        assert_eq!(ui_scale(&params, announced(2.0), 1.0), 2.0);
+        assert_eq!(
+            layout_scale(ui_scale(&params, announced(2.0), 1.0), 2.0),
+            1.0
+        );
         // Including at whatever odd factor a host feels like reporting.
-        assert_eq!(layout_scale(ui_scale(&params, 1.6), 1.6), 1.0);
+        assert_eq!(
+            layout_scale(ui_scale(&params, announced(1.6), 1.0), 1.6),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_silent_host_is_not_taken_for_one_asking_for_100_percent() {
+        let params = MaterParams::new(Arc::new(Shared::default()));
+
+        // The desktop's 200 % is the whole answer here: nothing multiplies the points on the way to
+        // the screen, so the interface has to be drawn at twice the size rather than divided by it.
+        assert_eq!(ui_scale(&params, SILENT, 2.0), 2.0);
+        assert_eq!(
+            layout_scale(ui_scale(&params, SILENT, 2.0), SILENT.factor),
+            2.0
+        );
+        // And a host that does announce 100 % is believed over the desktop, not overruled by it.
+        assert_eq!(ui_scale(&params, announced(1.0), 2.0), 1.0);
+    }
+
+    #[test]
+    fn a_scale_set_by_hand_outranks_both_of_them() {
+        let params = MaterParams::new(Arc::new(Shared::default()));
+        params.set_ui_scale(1.5);
+
+        assert_eq!(ui_scale(&params, announced(2.0), 2.0), 1.5);
+        assert_eq!(ui_scale(&params, SILENT, 2.0), 1.5);
+    }
+
+    #[test]
+    fn an_unchosen_window_is_sized_for_the_scale_it_will_be_drawn_at() {
+        // The arithmetic `size_for_scale` applies to a window still at the default. A 200 % desktop
+        // needs twice the window, or the interface is drawn into half the room it was laid out for.
+        assert_eq!(
+            rescaled(DEFAULT_WINDOW, 1.0, 2.0),
+            egui::vec2(DEFAULT_WINDOW.0 as f32 * 2.0, DEFAULT_WINDOW.1 as f32 * 2.0)
+        );
+        // And a host that scales for us leaves the layout at 1, which asks for no change at all.
+        assert_eq!(
+            rescaled(DEFAULT_WINDOW, 1.0, 1.0),
+            egui::vec2(DEFAULT_WINDOW.0 as f32, DEFAULT_WINDOW.1 as f32)
+        );
+    }
+
+    #[test]
+    fn a_desktop_scaling_is_held_to_the_steps_the_interface_offers() {
+        // Whatever `Xft.dpi` says, this is a size someone has to be able to work at.
+        let scale = display_scale();
+
+        assert!(scale >= UI_SCALES[0]);
+        assert!(scale <= UI_SCALES[UI_SCALES.len() - 1]);
     }
 
     #[test]
@@ -1522,8 +1681,11 @@ mod tests {
         let params = MaterParams::new(Arc::new(Shared::default()));
         params.set_ui_scale(1.25);
 
-        assert_eq!(ui_scale(&params, 2.0), 1.25);
+        assert_eq!(ui_scale(&params, announced(2.0), 1.0), 1.25);
         // Which is a smaller interface than the window was sized for. That is the point of asking.
-        assert_eq!(layout_scale(ui_scale(&params, 2.0), 2.0), 0.625);
+        assert_eq!(
+            layout_scale(ui_scale(&params, announced(2.0), 1.0), 2.0),
+            0.625
+        );
     }
 }

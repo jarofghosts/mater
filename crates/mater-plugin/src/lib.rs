@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+mod display;
 mod editor;
 mod loader;
 mod mpe;

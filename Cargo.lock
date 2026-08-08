@@ -1842,6 +1842,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symphonia",
+ "x11rb",
 ]
 
 [[package]]

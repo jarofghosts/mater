@@ -29,6 +29,11 @@ type StringToInt = Arc<dyn Fn(&str) -> Option<i32> + Send + Sync>;
 /// same amount larger or smaller, so the interface keeps filling the one it is given.
 pub const UI_SCALES: [f32; 6] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5];
 
+/// The window a fresh instance opens at, in points, laid out for a scale of 1. Named because the
+/// editor also reads it: a window still exactly this size is one nobody has chosen, and so one it
+/// may size for the scale it is about to draw at. See `editor::size_for_scale`.
+pub const DEFAULT_WINDOW: (u32, u32) = (960, 700);
+
 /// Polyphonic modulation ids for the eight knobs, in [`granny_core::params::KNOB_RANGES`] order.
 pub const POLY_MOD_RATE: u32 = 0;
 pub const POLY_MOD_CRUSH: u32 = 1;
@@ -429,7 +434,7 @@ pub struct MaterParams {
 impl MaterParams {
     pub fn new(shared: Arc<Shared>) -> Self {
         Self {
-            editor_state: EguiState::from_size(960, 700),
+            editor_state: EguiState::from_size(DEFAULT_WINDOW.0, DEFAULT_WINDOW.1),
             ui_scale: RwLock::new(UI_SCALES[0]),
             ui_scale_set: RwLock::new(false),
             sample: SampleSlot::new(shared.clone()),

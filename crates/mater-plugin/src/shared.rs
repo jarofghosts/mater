@@ -8,7 +8,7 @@ use granny_core::sample::SampleBuffer;
 use granny_core::scala::ScalaTuning;
 use nih_plug::prelude::AtomicF32;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Maximum number of simultaneous voices.
@@ -37,9 +37,13 @@ pub struct Shared {
     pub playheads: Vec<AtomicF32>,
     /// Last message to show in the editor: what loaded, or why it did not.
     pub status: Mutex<String>,
-    /// The DPI scaling the host last asked for. Declined, and kept only so the editor can say so.
-    /// See `editor::FixedScale`.
+    /// The DPI scaling the host last announced, and took. Kept so the layout can divide it back out
+    /// of the `ui scale` someone picked, and so the editor can report it. See `editor::HostDpi`.
     pub host_dpi: AtomicF32,
+    /// Whether the host has ever announced one at all. [`Self::host_dpi`] starts at 1.0 and so
+    /// cannot tell a host that says 100 % apart from one that never says anything — which is
+    /// exactly the difference you need when the interface is coming out the wrong size.
+    pub host_dpi_reported: AtomicBool,
 }
 
 impl Default for Shared {
@@ -53,6 +57,7 @@ impl Default for Shared {
                 .collect(),
             status: Mutex::new("no sample loaded".into()),
             host_dpi: AtomicF32::new(1.0),
+            host_dpi_reported: AtomicBool::new(false),
         }
     }
 }
