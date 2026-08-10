@@ -150,7 +150,26 @@ parameter means touching both, but they can never disagree about a range.
 
 ## Voices
 
-Eight, against the CLAP build's sixteen, because the Move shares one ARM between the shim, the
-shadow UI and whatever else is in the chain. `voices` raises it to sixteen. There are no
-measurements behind eight yet — `touch /data/UserData/schwung/otlp_trace_on` and read
-`shadow.mix_audio` to get some.
+Eight, against the CLAP build's sixteen. Measured on a Move, rendering granular (`grain` 30,
+`shift` 200), timing `render_block` alone and net of the ~3.8 µs a ctypes round trip costs:
+
+| voices | µs/block | of realtime |
+|---|---|---|
+| 0 | 2.6 | 0.1 % |
+| 1 | 5.8 | 0.2 % |
+| 8 | 23.0 | 0.8 % |
+| 16 | 42.2 | 1.5 % |
+
+About 2.5 µs a voice, on top of 2.6 µs fixed. Against a 2902 µs block that reads as nothing, and
+it was tempting to raise the default to sixteen and be done.
+
+The frame is the wrong denominator. `spi_timing` on the same device reports a frame total
+averaging 2759 µs against the 2902 µs period, of which the SPI transfer itself is 2679 µs — so
+the slack everything else shares is about 143 µs typically and was observed as low as 39 µs. The
+obxd in the next slot renders in 58 µs at its worst. Sixteen voices would ask for 42 µs of a
+worst case that has 39 µs in it, and this is one slot of four.
+
+So eight stays, and the reason is now a number rather than caution. Sixteen is available and fine
+on a quiet frame; it is not something to default to. If this is ever revisited, measure
+`Slot render max(us)` under load rather than a percentage of realtime — realtime is not the
+budget, the gap after the transfer is.

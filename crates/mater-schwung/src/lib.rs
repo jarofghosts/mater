@@ -52,9 +52,10 @@ use host::HostApiV1;
 /// `frames` never has to allocate on the audio thread; anything larger is clamped instead.
 pub const MAX_FRAMES: usize = 512;
 
-/// The CLAP build offers sixteen. The Move shares one ARM between the shim, the shadow UI and
-/// whatever else is in the chain, so this starts lower — raise it once `otlp_trace_on` has given
-/// real numbers for `shadow.mix_audio`.
+/// The CLAP build offers sixteen. Measured on a Move this engine costs about 2.5 µs a voice a
+/// block, which is nothing against a 2902 µs block — but the slack left after the SPI transfer
+/// is only ~143 µs typically and was seen as low as 39 µs, shared with three other slots.
+/// Sixteen would ask for 42 µs of that. `voices` raises it; see `schwung/README.md`.
 const DEFAULT_VOICES: usize = 8;
 
 const SAMPLE_RATE: f32 = 44_100.0;
