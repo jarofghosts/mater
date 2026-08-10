@@ -1,0 +1,27 @@
+[package]
+name = "mater-schwung"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Schwung module wrapper: the microGranny engine as an Ableton Move DSP plugin"
+
+[lib]
+# The Schwung host dlopen()s this and looks for `move_plugin_init_v2`. `lib` is alongside it so
+# the integration test can drive that same table in-process.
+name = "mater_schwung"
+crate-type = ["cdylib", "lib"]
+
+# Kept close to dependency-free. The CLAP build's sample loading is symphonia's; here the WAV
+# reader is written by hand so the cross-compile has no C in it at all. Wider format support is
+# phase 3, along with moving the load off the audio thread.
+[dependencies]
+granny-core = { path = "../granny-core" }
+
+# Reading the state blob back, which is the one place where being lenient about JSON someone else
+# may have reformatted matters more than the binary size. The blob is *written* by hand, straight
+# into the host's buffer, because that side runs on the audio thread — see `state.rs`.
+serde_json = "1"
+
+[dev-dependencies]
+# The integration test inspects the state blob it round-trips.
+serde_json = "1"

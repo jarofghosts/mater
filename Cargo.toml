@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/granny-core", "crates/mater-plugin", "xtask"]
+members = [
+    "crates/granny-core",
+    "crates/mater-plugin",
+    "crates/mater-schwung",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.1.0"
