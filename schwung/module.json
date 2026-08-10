@@ -2,7 +2,7 @@
   "id": "mater",
   "name": "mater",
   "abbrev": "MTR",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Bastl microGranny 2.5 granular sampler, polyphonic and microtonal",
   "author": "jesse keane",
   "dsp": "dsp.so",
@@ -20,17 +20,9 @@
       "levels": {
         "root": {
           "label": "mater",
-          "knobs": [
-            "rate",
-            "crush",
-            "attack",
-            "release",
-            "grain",
-            "shift",
-            "start",
-            "end"
-          ],
+          "knobs": ["rate", "crush", "attack", "release", "grain", "shift", "start", "end"],
           "params": [
+            { "level": "sample", "label": "Sample..." },
             { "key": "rate", "label": "Rate" },
             { "key": "crush", "label": "Crush" },
             { "key": "attack", "label": "Attack" },
@@ -100,18 +92,19 @@
         },
         "fidelity": {
           "label": "Fidelity",
-          "knobs": [
-            "curve_mode",
-            "interpolate",
-            "quantize_seeks",
-            "grain_fade_ms"
-          ],
+          "knobs": ["curve_mode", "interpolate", "quantize_seeks", "grain_fade_ms"],
           "params": [
             { "key": "curve_mode", "label": "Curve Maps" },
             { "key": "interpolate", "label": "Interpolate" },
             { "key": "quantize_seeks", "label": "Block Seeks" },
             { "key": "grain_fade_ms", "label": "Grain Fade" }
           ]
+        },
+        "sample": {
+          "label": "Sample",
+          "items_param": "sample_list",
+          "select_param": "sample_index",
+          "navigate_to": "root"
         }
       }
     }

@@ -557,3 +557,101 @@ fn a_state_blob_that_is_not_ours_is_survivable() {
         unsafe { (api.destroy_instance)(instance) }
     }
 }
+
+#[test]
+fn the_sample_browser_lists_and_loads() {
+    let api = api();
+
+    // A module directory standing in for an installed one: the browser lists its own directory
+    // first, which is how the shipped `default.wav` reaches the top of the list.
+    let dir = std::env::temp_dir().join("mater-abi-browser");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("kits")).unwrap();
+    std::fs::copy(write_test_wav("mater-abi-b1.wav"), dir.join("alpha.wav")).unwrap();
+    std::fs::copy(
+        write_test_wav("mater-abi-b2.wav"),
+        dir.join("kits/beta.wav"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("notes.txt"), b"not audio").unwrap();
+
+    let module_dir = CString::new(dir.to_str().unwrap()).unwrap();
+    let instance = unsafe { (api.create_instance)(module_dir.as_ptr(), std::ptr::null()) };
+    assert!(!instance.is_null());
+
+    let listing = get(api, instance, "sample_list").expect("sample_list is required");
+    let items: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    let items = items.as_array().unwrap();
+
+    let labels: Vec<&str> = items
+        .iter()
+        .map(|i| i["label"].as_str().unwrap().trim_start_matches("* "))
+        .collect();
+    assert!(labels.contains(&"alpha"), "got {labels:?}");
+    assert!(
+        labels.contains(&"kits/beta"),
+        "a nested sample, labelled by its path: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.contains("notes")),
+        "non-audio must not be offered"
+    );
+
+    // Every row carries the index the UI sends back.
+    for (n, item) in items.iter().enumerate() {
+        assert_eq!(item["index"], serde_json::json!(n));
+    }
+
+    // Pick the nested one by its index and confirm that is what loaded.
+    let beta = labels.iter().position(|l| *l == "kits/beta").unwrap();
+    set(api, instance, "sample_index", &beta.to_string());
+    // The name comes from the file that loaded, not from whatever it was copied from.
+    assert_eq!(get(api, instance, "sample_name").as_deref(), Some("beta"));
+
+    midi(api, instance, [0x90, 60, 100]);
+    assert!(
+        render_peak(api, instance, 64) > 0,
+        "the picked sample produced silence"
+    );
+
+    // The loaded row is marked, because the browser is the only place the current sample shows.
+    let listing = get(api, instance, "sample_list").unwrap();
+    let items: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    assert!(
+        items.as_array().unwrap()[beta]["label"]
+            .as_str()
+            .unwrap()
+            .starts_with("* "),
+        "the loaded sample should be marked"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_shipped_default_sample_makes_a_fresh_slot_audible() {
+    let api = api();
+
+    // The module ships one so a freshly-loaded slot is not silent with no way to tell why.
+    let dir = std::env::temp_dir().join("mater-abi-default");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(write_test_wav("mater-abi-def.wav"), dir.join("default.wav")).unwrap();
+
+    let module_dir = CString::new(dir.to_str().unwrap()).unwrap();
+    let instance = unsafe { (api.create_instance)(module_dir.as_ptr(), std::ptr::null()) };
+
+    assert_eq!(
+        get(api, instance, "sample_name").as_deref(),
+        Some("default")
+    );
+    midi(api, instance, [0x90, 60, 100]);
+    assert!(
+        render_peak(api, instance, 64) > 0,
+        "a fresh slot must make a sound"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+    let _ = std::fs::remove_dir_all(&dir);
+}

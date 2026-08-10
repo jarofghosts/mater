@@ -19,7 +19,9 @@ STAGE="$ROOT/dist/$MODULE_ID"
 
 echo "==> $USER@$HOST:$DEST"
 ssh "$USER@$HOST" "mkdir -p '$DEST'"
-scp "$STAGE/dsp.so" "$STAGE/module.json" "$USER@$HOST:$DEST/"
+# Everything the build staged, not a named list: naming them is how `default.wav` got left behind
+# the first time, and the module was silent on the device with no clue why.
+scp -r "$STAGE/." "$USER@$HOST:$DEST/"
 
 cat <<'EOF'
 

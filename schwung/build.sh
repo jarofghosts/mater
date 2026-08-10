@@ -49,6 +49,8 @@ mkdir -p "$STAGE"
 # The chain host loads a sound generator's shared library as `dsp.so`, by that name.
 cp "$BUILT" "$STAGE/dsp.so"
 cp "$ROOT/schwung/module.json" "$STAGE/module.json"
+# A freshly-loaded slot with no sample is silent and gives no hint why, so one ships with it.
+cp "$ROOT/schwung/assets/default.wav" "$STAGE/default.wav"
 aarch64-linux-gnu-strip "$STAGE/dsp.so" 2>/dev/null || true
 
 tar -czf "$ROOT/dist/$MODULE_ID-module.tar.gz" -C "$ROOT/dist" "$MODULE_ID"

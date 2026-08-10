@@ -375,6 +375,65 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Serialise the sample browser's contents as the JSON array `items_param` levels expect.
+///
+/// The shadow UI parses this into `{index, label}` rows and sends back the index of whatever was
+/// picked. Written straight into the host's buffer for the same reason the state blob is.
+///
+/// # Safety
+///
+/// `buf` must be writable for `buf_len` bytes, which is what `get_param` guarantees.
+pub fn write_sample_list(inst: &Instance, buf: *mut c_char, buf_len: c_int) -> c_int {
+    if buf.is_null() || buf_len <= 1 {
+        return -1;
+    }
+    let capacity = buf_len as usize - 1;
+    let slice = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, capacity) };
+    let mut w = SliceWriter::new(slice);
+
+    let build = |w: &mut SliceWriter| -> fmt::Result {
+        w.write_char('[')?;
+        for (index, entry) in inst.samples.iter().enumerate() {
+            if index > 0 {
+                w.write_char(',')?;
+            }
+            write!(w, "{{\"index\":{index},\"label\":")?;
+            // A marker on the loaded one, since the browser is the only place the current sample
+            // is visible at all.
+            if entry.path == inst.sample_path {
+                let mut marked = String::with_capacity(entry.label.len() + 2);
+                marked.push_str("* ");
+                marked.push_str(&entry.label);
+                write_json_string(w, &marked)?;
+            } else {
+                write_json_string(w, &entry.label)?;
+            }
+            w.write_char('}')?;
+        }
+        w.write_char(']')
+    };
+
+    if build(&mut w).is_err() {
+        // Better an empty list than a truncated one the UI cannot parse.
+        return write_empty_list(buf, capacity);
+    }
+
+    let len = w.len();
+    unsafe { *buf.add(len) = 0 };
+    len as c_int
+}
+
+fn write_empty_list(buf: *mut c_char, capacity: usize) -> c_int {
+    if capacity < 3 {
+        return -1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(b"[]".as_ptr(), buf as *mut u8, 2);
+        *buf.add(2) = 0;
+    }
+    2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

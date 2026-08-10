@@ -74,9 +74,17 @@ schwung-manager at `http://move.local:7700` from a `release.json` on the repo's 
 
 ## What it does
 
-- **Loads a WAV** through `sample_path`, resampled to 22050 Hz and normalised exactly as the CLAP
-  loader does, so a sample sounds the same in both. YIN detection runs on load and sets the root,
-  so playing note N gets you note N.
+- **A sample browser**, `Sample...` at the top of the menu. It walks the module's own directory
+  and `UserLibrary/{Samples,Recordings}` — where Move keeps recordings and where Schwung's
+  resampler and skipback write — and offers what it finds, nested paths labelled by their path and
+  the loaded one marked. Setting `sample_path` directly still works; the browser is what makes it
+  reachable from the device.
+- **A default sample**, shipped in the module, so a freshly-loaded slot makes a sound. Without one
+  the module comes up silent with nothing on screen to say why, which is exactly how it shipped
+  the first time.
+- **Loads a WAV** resampled to 22050 Hz and normalised exactly as the CLAP loader does, so a
+  sample sounds the same in both. YIN detection runs on load and sets the root, so playing note N
+  gets you note N.
 - **Plays notes** — note on/off, velocity, sustain, and per-channel bend, pressure and CC74
   resolved through `granny-core`'s MPE model. Eight voices by default.
 - **The eight knobs** sit on the eight physical encoders in the firmware's order, in the firmware's
@@ -93,8 +101,6 @@ schwung-manager at `http://move.local:7700` from a `release.json` on the repo's 
   does not exist here.
 - **A state blob**, which is what slot autosave, chain patches and User Presets all ride on. See
   below.
-- **A default sample.** If `default.wav` is dropped next to `module.json`, a fresh slot loads it,
-  which is the difference between "the module is loaded" and "the module makes a sound".
 
 ## The state blob, and what "self-contained" costs
 

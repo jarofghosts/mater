@@ -223,6 +223,9 @@ pub fn set(inst: &mut Instance, key: &str, val: &str) {
 
         // Not realtime-safe: each of these reads a file or parses JSON inline. Phase 3.
         "sample_path" => inst.load_sample(val),
+        // What the browser sends back: the index of the row that was picked.
+        "sample_index" => inst.load_sample_index(index(val).max(0) as usize),
+        "rescan_samples" => inst.scan_samples(),
         "scala_path" => inst.load_scala(val, false),
         "scala_kbm_path" => inst.load_scala(val, true),
         "state" => state::restore(inst, val),
@@ -538,6 +541,15 @@ mod tests {
 
         let mut laid_out = Vec::new();
         for (name, level) in levels {
+            // A selection level (`items_param`) has no params of its own — its rows come from the
+            // plugin at runtime. Its `select_param` is a command, not a stored parameter.
+            if level.get("items_param").is_some() {
+                assert!(
+                    level.get("select_param").is_some(),
+                    "{name} offers items with no way to pick one"
+                );
+                continue;
+            }
             for param in level["params"].as_array().expect("params").iter() {
                 if let Some(key) = param.get("key").and_then(|k| k.as_str()) {
                     laid_out.push(key);

@@ -63,6 +63,77 @@ const SAMPLE_RATE: f32 = 44_100.0;
 /// 24 PPQN, as the transport reports it.
 const TICKS_PER_BEAT: f64 = 24.0;
 
+/// Where the sample browser looks, after the module's own directory.
+///
+/// `UserLibrary` is where Move keeps recordings and where Schwung's own resampler and skipback
+/// write. Absolute, because a chain slot has no working directory worth speaking of, and skipped
+/// silently when absent so the standalone host and a desktop test run are not full of errors.
+const SAMPLE_ROOTS: &[&str] = &[
+    "/data/UserData/UserLibrary/Samples",
+    "/data/UserData/UserLibrary/Recordings",
+];
+
+/// How deep to walk, and how many entries to offer. Move's sample tree nests a few levels
+/// (`Samples/Schwung/Resampler/<date>/`), and the list has to fit the host's 64 KB buffer with
+/// room to spare.
+const SAMPLE_SCAN_DEPTH: usize = 4;
+const MAX_SAMPLES: usize = 256;
+/// Longest label kept. The display is 128 px wide; anything past this is invisible anyway.
+const MAX_LABEL: usize = 44;
+
+/// One entry in the sample browser.
+pub struct SampleEntry {
+    pub path: String,
+    /// What the browser shows: the path below its root, without the extension.
+    pub label: String,
+}
+
+/// Recursively collect `.wav` files below `dir`, labelling each by its path under `base`.
+fn collect_wavs(base: &Path, dir: &Path, depth: usize, out: &mut Vec<SampleEntry>) {
+    if depth > SAMPLE_SCAN_DEPTH || out.len() >= MAX_SAMPLES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    // Sorted, so the list is stable between scans rather than in whatever order the filesystem
+    // hands things back.
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+
+    for path in paths {
+        if out.len() >= MAX_SAMPLES {
+            return;
+        }
+        if path.is_dir() {
+            collect_wavs(base, &path, depth + 1, out);
+            continue;
+        }
+        let is_wav = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+        if !is_wav {
+            continue;
+        }
+
+        let relative = path.strip_prefix(base).unwrap_or(&path);
+        let mut label = relative.with_extension("").to_string_lossy().into_owned();
+        if label.chars().count() > MAX_LABEL {
+            // Keep the tail: the date directories Schwung writes share long prefixes, so the end
+            // of the path is what distinguishes one recording from another.
+            let skip = label.chars().count() - MAX_LABEL + 1;
+            label = format!("…{}", label.chars().skip(skip).collect::<String>());
+        }
+
+        out.push(SampleEntry {
+            path: path.to_string_lossy().into_owned(),
+            label,
+        });
+    }
+}
+
 pub struct Instance {
     pub engine: Engine,
     pub params: HwParams,
@@ -108,6 +179,12 @@ pub struct Instance {
     pub sample_path: String,
     /// Reported through `get_error`, which the host polls to show a module as failed.
     pub error: String,
+
+    /// What the sample browser offers, cached. Built on first request rather than at load: the
+    /// walk is file I/O, and paying it when someone opens the menu is better than paying it every
+    /// time a slot loads.
+    pub samples: Vec<SampleEntry>,
+    pub samples_scanned: bool,
 
     left: Vec<f32>,
     right: Vec<f32>,
@@ -155,11 +232,14 @@ impl Instance {
             left: vec![0.0; MAX_FRAMES],
             right: vec![0.0; MAX_FRAMES],
             beats: 0.0,
+            samples: Vec::new(),
+            samples_scanned: false,
         };
 
         instance.sync_mpe();
 
-        // A module directory can ship a sample to make a fresh slot audible.
+        // A module directory ships a sample, so a fresh slot makes a sound rather than looking
+        // broken. Without one there is nothing to hear and no indication why.
         let default_sample = Path::new(module_dir).join("default.wav");
         if default_sample.is_file() {
             let path = default_sample.to_string_lossy().into_owned();
@@ -258,6 +338,44 @@ impl Instance {
         self.scala_scl = scl.to_string();
         self.scala_kbm = kbm.to_string();
         self.error.clear();
+    }
+
+    /// Walk the sample roots and cache what is there.
+    ///
+    /// Not realtime-safe — it is a directory walk. Called on the first `sample_list` request and
+    /// on an explicit rescan, so the cost lands when someone opens the browser rather than on
+    /// every slot load.
+    pub fn scan_samples(&mut self) {
+        self.samples.clear();
+        self.samples_scanned = true;
+
+        // The module's own directory first, so the sample it ships is the top of the list.
+        let mut roots: Vec<String> = vec![self.module_dir.clone()];
+        roots.extend(SAMPLE_ROOTS.iter().map(|r| r.to_string()));
+
+        for root in &roots {
+            let base = Path::new(root);
+            if base.is_dir() {
+                collect_wavs(base, base, 0, &mut self.samples);
+            }
+            if self.samples.len() >= MAX_SAMPLES {
+                break;
+            }
+        }
+
+        self.samples.sort_by(|a, b| a.label.cmp(&b.label));
+        self.samples.truncate(MAX_SAMPLES);
+    }
+
+    /// Load the nth entry the browser offered.
+    pub fn load_sample_index(&mut self, index: usize) {
+        if !self.samples_scanned {
+            self.scan_samples();
+        }
+        if let Some(entry) = self.samples.get(index) {
+            let path = entry.path.clone();
+            self.load_sample(&path);
+        }
     }
 
     /// Load a `.scl` or `.kbm` off disk and install it. Not realtime-safe; see `load_sample`.
@@ -494,10 +612,17 @@ unsafe extern "C" fn get_param(
         };
         let Some(key) = as_str(key) else { return -1 };
 
-        // The state blob is too big for the scratch buffer and is written straight into the
+        // Both of these are too big for the scratch buffer and are written straight into the
         // host's, which is where the 64 KB ceiling actually lives.
         if key == "state" {
             return state::write(inst, buf, buf_len);
+        }
+        if key == "sample_list" {
+            // Scanned on demand: this is the first moment we know someone wants the list.
+            if !inst.samples_scanned {
+                inst.scan_samples();
+            }
+            return state::write_sample_list(inst, buf, buf_len);
         }
 
         let mut scratch = bridge::Scratch::new();
