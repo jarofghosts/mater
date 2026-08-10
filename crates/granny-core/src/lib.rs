@@ -36,6 +36,7 @@ pub mod curves;
 pub mod dac;
 pub mod engine;
 pub mod envelope;
+pub mod mpe;
 pub mod params;
 pub mod pitch;
 pub mod rng;
@@ -46,6 +47,7 @@ pub mod tuning;
 pub mod voice;
 
 pub use engine::{fallback_voice_id, Engine, Scene, TransportInfo};
+pub use mpe::{MpeState, MpeZone, Target};
 pub use params::{
     Expression, Fidelity, HwParams, ModDest, ModSlot, ModSource, NoteMode, Resolved, MOD_SLOTS,
 };

@@ -16,14 +16,14 @@ use std::sync::Arc;
 mod display;
 mod editor;
 mod loader;
-mod mpe;
+
 mod params;
 mod project;
 mod shared;
 
+use granny_core::mpe::{MpeState, MpeZone, Target, CC_SLIDE, CC_SUSTAIN};
 use loader::StoredScale;
-use mpe::{MpeState, Target, CC_SLIDE, CC_SUSTAIN};
-use params::{MaterParams, MpeZoneParam, NoteModeParam};
+use params::{MaterParams, NoteModeParam};
 use shared::{Shared, MAX_VOICES, PLAYHEAD_IDLE};
 
 /// Largest run of samples rendered without re-reading parameters.
@@ -505,8 +505,8 @@ impl Plugin for Mater {
         // A split routes by channel and an MPE zone hands every note a channel of its own; the two
         // cannot both own the channel number, so the split wins and the input is read as plain MIDI.
         let zone = match self.params.note_mode.value() {
-            NoteModeParam::Split => MpeZoneParam::Off,
-            _ => self.params.mpe_zone.value(),
+            NoteModeParam::Split => MpeZone::Off,
+            _ => self.params.mpe_zone.value().into(),
         };
         self.mpe.set_zone(zone);
         self.mpe.set_ranges(

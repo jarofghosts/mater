@@ -109,6 +109,19 @@ pub enum MpeZoneParam {
     Upper,
 }
 
+/// The parameter exists separately from [`granny_core::MpeZone`] only because nih-plug needs its
+/// own derive and its own display names on it. The zone logic lives in the engine crate, so the
+/// Move build and this one cannot drift apart on how a member channel bends.
+impl From<MpeZoneParam> for granny_core::MpeZone {
+    fn from(zone: MpeZoneParam) -> Self {
+        match zone {
+            MpeZoneParam::Off => Self::Off,
+            MpeZoneParam::Lower => Self::Lower,
+            MpeZoneParam::Upper => Self::Upper,
+        }
+    }
+}
+
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ModSourceParam {
     #[id = "none"]

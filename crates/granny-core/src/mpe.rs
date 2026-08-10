@@ -1,11 +1,24 @@
 //! MPE channel state.
 //!
-//! CLAP hosts deliver per-note expression directly, so this only matters for MIDI input. In an MPE
+//! Hosts that deliver per-note expression directly (CLAP note expressions) bypass this; it is what
+//! plain MIDI input needs. In an MPE
 //! zone each sounding note owns a channel, and that channel's pitch bend, channel pressure and
 //! CC74 belong to that note alone; the master channel's versions apply to everything. With the zone
 //! off it all behaves like plain MIDI and applies globally.
 
-use crate::params::MpeZoneParam;
+/// Which MPE zone is in force.
+///
+/// `Off` means plain MIDI: bend, pressure and CC74 apply to every voice. A wrapper with its own
+/// parameter type maps onto this rather than duplicating the state machine below.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum MpeZone {
+    Off,
+    /// Master on channel 1, members on 2-16.
+    #[default]
+    Lower,
+    /// Master on channel 16, members on 15-1.
+    Upper,
+}
 
 /// Which voices an incoming channel message should reach.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -38,7 +51,7 @@ const MIN_RANGE: f32 = 0.01;
 
 #[derive(Clone, Debug)]
 pub struct MpeState {
-    zone: MpeZoneParam,
+    zone: MpeZone,
     /// Per-channel bend, -1..1.
     bend: [f32; CHANNELS],
     pressure: [f32; CHANNELS],
@@ -59,7 +72,7 @@ pub struct MpeState {
 impl Default for MpeState {
     fn default() -> Self {
         Self {
-            zone: MpeZoneParam::Lower,
+            zone: MpeZone::Lower,
             bend: [0.0; CHANNELS],
             pressure: [0.0; CHANNELS],
             slide: [0.0; CHANNELS],
@@ -74,7 +87,7 @@ impl Default for MpeState {
 }
 
 impl MpeState {
-    pub fn set_zone(&mut self, zone: MpeZoneParam) {
+    pub fn set_zone(&mut self, zone: MpeZone) {
         if self.zone != zone {
             self.zone = zone;
             self.bend = [0.0; CHANNELS];
@@ -99,7 +112,7 @@ impl MpeState {
     /// With the zone off there is no master channel — but there is no MPE either, so the input is
     /// plain MIDI and the ordinary bend range is the one that applies.
     fn uses_master_range(&self, channel: u8) -> bool {
-        self.zone == MpeZoneParam::Off || self.is_master(channel)
+        self.zone == MpeZone::Off || self.is_master(channel)
     }
 
     /// Bend range in semitones for member channels: MPE's wide per-note range.
@@ -121,24 +134,24 @@ impl MpeState {
     /// Whether a channel is the zone's master channel.
     pub fn is_master(&self, channel: u8) -> bool {
         match self.zone {
-            MpeZoneParam::Off => false,
-            MpeZoneParam::Lower => channel == 0,
-            MpeZoneParam::Upper => channel == 15,
+            MpeZone::Off => false,
+            MpeZone::Lower => channel == 0,
+            MpeZone::Upper => channel == 15,
         }
     }
 
     fn master_channel(&self) -> Option<usize> {
         match self.zone {
-            MpeZoneParam::Off => None,
-            MpeZoneParam::Lower => Some(0),
-            MpeZoneParam::Upper => Some(15),
+            MpeZone::Off => None,
+            MpeZone::Lower => Some(0),
+            MpeZone::Upper => Some(15),
         }
     }
 
     /// Where a channel message should land. Master channel messages reach every voice.
     fn target(&self, channel: u8) -> Target {
         match self.zone {
-            MpeZoneParam::Off => Target::All,
+            MpeZone::Off => Target::All,
             _ if self.is_master(channel) => Target::All,
             _ => Target::Channel(channel),
         }
@@ -193,7 +206,7 @@ impl MpeState {
     pub fn pressure_for(&self, channel: u8) -> f32 {
         let channel = channel as usize % CHANNELS;
         match self.zone {
-            MpeZoneParam::Off => self.pressure[channel],
+            MpeZone::Off => self.pressure[channel],
             _ => self.pressure[channel].max(self.master(&self.pressure, 0.0)),
         }
     }
@@ -201,7 +214,7 @@ impl MpeState {
     pub fn slide_for(&self, channel: u8) -> f32 {
         let channel = channel as usize % CHANNELS;
         match self.zone {
-            MpeZoneParam::Off => self.slide[channel],
+            MpeZone::Off => self.slide[channel],
             _ if self.is_master(channel as u8) => self.slide[channel],
             _ => self.slide[channel],
         }
@@ -268,7 +281,7 @@ mod tests {
     #[test]
     fn with_the_zone_off_everything_is_global() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Off);
+        mpe.set_zone(MpeZone::Off);
         assert_eq!(mpe.set_bend(5, 1.0), Target::All);
         // Plain MIDI, so a full-scale bend is the ordinary two semitones.
         assert!((mpe.bend_semitones_for(5) - 2.0).abs() < 1e-4);
@@ -278,7 +291,7 @@ mod tests {
     fn a_quarter_tone_from_a_plain_midi_controller_is_a_quarter_tone() {
         // The bug this guards: read against MPE's ±48 instead of the ordinary ±2, a quarter tone
         // lands exactly an octave away, which is precisely what makes it easy to miss.
-        for zone in [MpeZoneParam::Off, MpeZoneParam::Lower] {
+        for zone in [MpeZone::Off, MpeZone::Lower] {
             let mut mpe = MpeState::default();
             mpe.set_zone(zone);
             // Channel 0 is the master channel of the lower zone, and the only channel a
@@ -295,7 +308,7 @@ mod tests {
     #[test]
     fn a_member_channel_still_gets_the_full_mpe_range() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_zone(MpeZone::Lower);
         mpe.set_bend(3, 1.0);
         assert!((mpe.bend_semitones_for(3) - 48.0).abs() < 1e-3);
     }
@@ -303,7 +316,7 @@ mod tests {
     #[test]
     fn member_channel_bend_only_reaches_that_channel() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_zone(MpeZone::Lower);
         assert_eq!(mpe.set_bend(3, 1.0), Target::Channel(3));
         assert_eq!(mpe.bend_for(3), 1.0);
         assert_eq!(mpe.bend_for(4), 0.0, "a sibling channel must not move");
@@ -312,7 +325,7 @@ mod tests {
     #[test]
     fn master_channel_bend_reaches_everything_and_stacks() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_zone(MpeZone::Lower);
         mpe.set_bend(2, 0.75); // member: +0.5 of 48 semitones
         assert_eq!(mpe.set_bend(0, 0.75), Target::All);
         // The two stack in semitones, not in normalised units: half of 48 from the member, half of
@@ -323,7 +336,7 @@ mod tests {
     #[test]
     fn the_upper_zone_puts_the_master_on_channel_sixteen() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Upper);
+        mpe.set_zone(MpeZone::Upper);
         assert!(mpe.is_master(15));
         assert!(!mpe.is_master(0));
         assert_eq!(mpe.set_bend(15, 1.0), Target::All);
@@ -333,14 +346,14 @@ mod tests {
     fn changing_zone_clears_stale_expression() {
         let mut mpe = MpeState::default();
         mpe.set_bend(3, 1.0);
-        mpe.set_zone(MpeZoneParam::Off);
+        mpe.set_zone(MpeZone::Off);
         assert_eq!(mpe.bend_for(3), 0.0);
     }
 
     #[test]
     fn rpn_zero_sets_the_bend_range() {
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_zone(MpeZone::Lower);
         assert_eq!(mpe.handle_rpn(1, CC_RPN_MSB, 0.0), None);
         assert_eq!(mpe.handle_rpn(1, CC_RPN_LSB, 0.0), None);
         assert_eq!(
@@ -355,7 +368,7 @@ mod tests {
         // A controller announcing ±2 on its master must not be taken to mean its members are ±2
         // too; that is the same factor-of-24 error by another route.
         let mut mpe = MpeState::default();
-        mpe.set_zone(MpeZoneParam::Lower);
+        mpe.set_zone(MpeZone::Lower);
         mpe.handle_rpn(0, CC_RPN_MSB, 0.0);
         mpe.handle_rpn(0, CC_RPN_LSB, 0.0);
         assert_eq!(mpe.handle_rpn(0, CC_DATA_ENTRY_MSB, 2.0 / 127.0), Some(2.0));
