@@ -160,8 +160,10 @@ fn build(inst: &Instance, w: &mut SliceWriter) -> fmt::Result {
 }
 
 fn write_sample(inst: &Instance, w: &mut SliceWriter) -> fmt::Result {
+    // Explicitly null rather than absent: a preset saved with no sample has to be able to say so,
+    // and absence has to keep meaning "no opinion" for blobs written before this key existed.
     if inst.sample.is_empty() {
-        return Ok(());
+        return w.write_str(",\"sample\":null");
     }
 
     // Try to carry the audio. If it will not fit, rewind and say so in the blob rather than
@@ -286,10 +288,17 @@ pub fn restore(inst: &mut Instance, blob: &str) {
 }
 
 fn restore_sample(inst: &mut Instance, sample: Option<&serde_json::Value>) {
-    let Some(sample) = sample else {
+    // No `sample` key at all means the blob has nothing to say about the sample — an older blob,
+    // or one from something else — so leave whatever is loaded alone. Only an explicit null means
+    // "this preset has no sample", which is what a blob written here says.
+    //
+    // Treating absence as a clear is how a slot that autosaved before its sample existed came back
+    // silent on every reload, wiping the default the module had just loaded.
+    let Some(sample) = sample else { return };
+    if sample.is_null() {
         inst.clear_sample();
         return;
-    };
+    }
 
     let path = sample.get("path").and_then(|v| v.as_str()).unwrap_or("");
 

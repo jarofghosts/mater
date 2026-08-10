@@ -655,3 +655,81 @@ fn a_shipped_default_sample_makes_a_fresh_slot_audible() {
     unsafe { (api.destroy_instance)(instance) }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_hierarchy_is_served_to_the_chain_host() {
+    let api = api();
+    let instance = create(api);
+
+    // The chain host forwards `synth:ui_hierarchy` straight to the plugin — there is no
+    // module.json fallback for a synth. Returning nothing here is a slot with no menu.
+    let json = get(api, instance, "ui_hierarchy").expect("a chainable synth must serve this");
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let levels = parsed["levels"].as_object().expect("levels");
+
+    assert!(levels.contains_key("root"));
+    let sample = levels
+        .get("sample")
+        .expect("the sample browser must be reachable");
+    assert_eq!(sample["items_param"], serde_json::json!("sample_list"));
+
+    let root_rows = levels["root"]["params"].as_array().unwrap();
+    assert!(
+        root_rows
+            .iter()
+            .any(|r| r.get("level").and_then(|l| l.as_str()) == Some("sample")),
+        "nothing at the root navigates to the sample browser"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
+#[test]
+fn a_blob_with_no_opinion_on_the_sample_leaves_it_loaded() {
+    let api = api();
+
+    // A slot that autosaved before its sample existed came back silent forever after: the blob had
+    // no `sample` key, restore read that as "clear", and it wiped the default the module had just
+    // loaded on every single reload.
+    let dir = std::env::temp_dir().join("mater-abi-noopinion");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        write_test_wav("mater-abi-noop.wav"),
+        dir.join("default.wav"),
+    )
+    .unwrap();
+    let module_dir = CString::new(dir.to_str().unwrap()).unwrap();
+
+    let instance = unsafe { (api.create_instance)(module_dir.as_ptr(), std::ptr::null()) };
+    assert_eq!(
+        get(api, instance, "sample_name").as_deref(),
+        Some("default")
+    );
+
+    set(api, instance, "state", r#"{"v":1,"params":{"grain":"40"}}"#);
+    assert_eq!(
+        get(api, instance, "grain").as_deref(),
+        Some("40"),
+        "params still apply"
+    );
+    assert_eq!(
+        get(api, instance, "sample_name").as_deref(),
+        Some("default"),
+        "a blob that says nothing about the sample must not clear it"
+    );
+    midi(api, instance, [0x90, 60, 100]);
+    assert!(render_peak(api, instance, 64) > 0);
+
+    // An explicit null is how a preset says it genuinely has no sample.
+    set(
+        api,
+        instance,
+        "state",
+        r#"{"v":1,"params":{},"sample":null}"#,
+    );
+    assert_eq!(get(api, instance, "sample_frames").as_deref(), Some("0"));
+
+    unsafe { (api.destroy_instance)(instance) }
+    let _ = std::fs::remove_dir_all(&dir);
+}

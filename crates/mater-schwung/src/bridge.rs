@@ -254,6 +254,7 @@ pub fn get<'a>(inst: &'a Instance, key: &str, scratch: &'a mut Scratch) -> Optio
     // Values that are already text can be handed straight back.
     match key {
         "chain_params" => return Some(CHAIN_PARAMS),
+        "ui_hierarchy" => return Some(UI_HIERARCHY),
         "sample_path" => return Some(&inst.sample_path),
         "sample_name" => return Some(&inst.sample.name),
         "scala_name" => return Some(scale_name(&inst.scala_scl)),
@@ -457,6 +458,17 @@ macro_rules! mod_slot_params {
     };
 }
 
+/// The menu structure, which a chainable sound generator has to serve itself.
+///
+/// The chain host falls back to `module.json` for an audio FX's hierarchy but not for a
+/// synth's — `chain_host.c` forwards `synth:ui_hierarchy` straight to the plugin. A module that
+/// only puts the hierarchy in `module.json`, as this one did, loads into a slot with no menu at
+/// all: every parameter exists and none of them can be reached.
+///
+/// `module.json` keeps its copy for the module manager and the standalone host. A test holds
+/// the two to being the same JSON.
+const UI_HIERARCHY: &str = r#"{"levels":{"root":{"label":"mater","knobs":["rate","crush","attack","release","grain","shift","start","end"],"params":[{"level":"sample","label":"Sample..."},{"key":"rate","label":"Rate"},{"key":"crush","label":"Crush"},{"key":"attack","label":"Attack"},{"key":"release","label":"Release"},{"key":"grain","label":"Grain Size"},{"key":"shift","label":"Shift"},{"key":"start","label":"Start"},{"key":"end","label":"End"},{"key":"note_mode","label":"Note Mode"},{"key":"slice_channel","label":"Slice Chan"},{"key":"level","label":"Level"},{"level":"settings","label":"Settings"},{"level":"tuning","label":"Tuning"},{"level":"mpe","label":"MPE"},{"level":"mod_matrix","label":"Mod Matrix"},{"level":"fidelity","label":"Fidelity"}]},"settings":{"label":"Settings","knobs":["legato","repeat","sync","random_shift"],"params":[{"key":"legato","label":"Legato"},{"key":"repeat","label":"Repeat"},{"key":"sync","label":"Sync"},{"key":"random_shift","label":"Random Shift"},{"key":"hold","label":"Hold"},{"key":"vel_sensitivity","label":"Vel Sens"},{"key":"voices","label":"Voices"},{"key":"hardware_cc_map","label":"HW CC Map"}]},"tuning":{"label":"Tuning","knobs":["match_input_pitch","root_adjust","pitch_table","snap"],"params":[{"key":"match_input_pitch","label":"Match Pitch"},{"key":"root_adjust","label":"Root Adjust"},{"key":"pitch_table","label":"Pitch Table"},{"key":"snap","label":"Snap"}]},"mpe":{"label":"MPE","knobs":["mpe_zone","mpe_bend_range","bend_range","follow_rpn"],"params":[{"key":"mpe_zone","label":"Zone"},{"key":"mpe_bend_range","label":"MPE Bend"},{"key":"bend_range","label":"MIDI Bend"},{"key":"follow_rpn","label":"Follow RPN 0"}]},"mod_matrix":{"label":"Mod Matrix","knobs":["mod1_source","mod1_dest","mod1_depth","mod2_depth"],"params":[{"key":"mod1_source","label":"1 Source"},{"key":"mod1_dest","label":"1 Dest"},{"key":"mod1_depth","label":"1 Depth"},{"key":"mod2_source","label":"2 Source"},{"key":"mod2_dest","label":"2 Dest"},{"key":"mod2_depth","label":"2 Depth"},{"key":"mod3_source","label":"3 Source"},{"key":"mod3_dest","label":"3 Dest"},{"key":"mod3_depth","label":"3 Depth"}]},"fidelity":{"label":"Fidelity","knobs":["curve_mode","interpolate","quantize_seeks","grain_fade_ms"],"params":[{"key":"curve_mode","label":"Curve Maps"},{"key":"interpolate","label":"Interpolate"},{"key":"quantize_seeks","label":"Block Seeks"},{"key":"grain_fade_ms","label":"Grain Fade"}]},"sample":{"label":"Sample","items_param":"sample_list","select_param":"sample_index","navigate_to":"root"}}}"#;
+
 /// Ranges, steps and enum options for the Shadow UI. Order does not matter here — `ui_hierarchy`
 /// in `module.json` decides what appears where.
 const CHAIN_PARAMS: &str = concat!(
@@ -649,5 +661,33 @@ mod tests {
             "Quarter-comma"
         );
         assert_eq!(scale_name(""), "");
+    }
+}
+
+#[cfg(test)]
+mod hierarchy_tests {
+    use super::*;
+
+    /// The hierarchy exists twice: here, where the chain host reads it, and in `module.json`,
+    /// where the module manager and the standalone host read it. They have to be the same.
+    #[test]
+    fn the_two_copies_of_the_hierarchy_agree() {
+        const MODULE_JSON: &str = include_str!("../../../schwung/module.json");
+        let module: serde_json::Value = serde_json::from_str(MODULE_JSON).unwrap();
+        let from_manifest = &module["capabilities"]["ui_hierarchy"];
+        let served: serde_json::Value = serde_json::from_str(UI_HIERARCHY).unwrap();
+        assert_eq!(
+            &served, from_manifest,
+            "module.json and UI_HIERARCHY have drifted apart"
+        );
+    }
+
+    /// The chain host rejects a synth whose hierarchy or params overrun the shadow param buffer,
+    /// and loads it with a NULL instance so the UI can show the error.
+    #[test]
+    fn what_is_served_fits_the_hosts_buffer() {
+        const SHADOW_PARAM_VALUE_LEN: usize = 65536;
+        assert!(UI_HIERARCHY.len() < SHADOW_PARAM_VALUE_LEN - 1);
+        assert!(CHAIN_PARAMS.len() < SHADOW_PARAM_VALUE_LEN - 1);
     }
 }

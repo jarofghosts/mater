@@ -113,8 +113,13 @@ file being deleted, which the tests check by deleting it. Over it, only the path
 recall re-reads the file. The blob says which happened, in `"embedded"`, so a preset carried to
 another device can explain itself instead of just coming up silent.
 
-The writer does not predict this — it *tries* to embed, and rewinds to write the path form if the
-audio did not fit. An estimate that was wrong in the optimistic direction would lose the whole
+An absent `sample` key means the blob has no opinion — an older blob, or one from something else
+— and whatever is loaded stays. Only an explicit `null` clears it. Reading absence as a clear is
+how a slot that autosaved before its sample existed came back silent on every reload, wiping the
+default the module had just loaded.
+
+The writer does not predict whether the audio fits — it *tries* to embed, and rewinds to write the
+path form if it did not. An estimate that was wrong in the optimistic direction would lose the whole
 blob, and Schwung reacts to an empty `state` by preserving the old `slot_N.json` and quietly
 giving up on autosave.
 
@@ -148,6 +153,14 @@ the old one off-thread.
 Move that process is the audio server — a stray bounds check would take the instrument down
 mid-set rather than dropping one note. Every entry point is wrapped in `catch_unwind` as a
 backstop, which is a backstop and not a licence: the code inside is still written not to panic.
+
+**A chainable synth serves its own `ui_hierarchy`.** `chain_host.c` falls back to `module.json`
+for an audio FX's hierarchy but not for a synth's — `synth:ui_hierarchy` is forwarded straight to
+the plugin. A module that only declares the hierarchy in `module.json` loads into a slot with no
+menu at all: every parameter exists, `chain_params` describes them, and none of them can be
+reached. So `UI_HIERARCHY` in `bridge.rs` is what the chain host reads, `module.json` keeps its
+copy for the module manager and the standalone host, and a test holds the two to being the same
+JSON.
 
 **`chain_params` owns the ranges, `module.json` owns the layout.** The Shadow UI learns step sizes,
 minima, maxima and enum options from the `chain_params` JSON that `get_param` returns; `ui_hierarchy`
