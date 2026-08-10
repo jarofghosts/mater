@@ -60,6 +60,27 @@ const DEFAULT_VOICES: usize = 8;
 
 const SAMPLE_RATE: f32 = 44_100.0;
 
+/// How much of velocity's sustain attenuation to apply, where the CLAP build applies all of it.
+///
+/// The firmware's envelope steps a 38-entry **dB** table and velocity decides how far down it
+/// starts, which is far steeper than the synths a Move user is coming from. Measured on the
+/// device, at the hardware's full response a note at velocity 1 lands 31 dB below one at 127 —
+/// and Move's pads, played through an overtake tool that passes velocity straight through, send
+/// velocities in the single digits routinely. The result reads as the module being silent.
+///
+/// dB below a full-velocity note, measured on a Move:
+///
+/// | Vel Sens | vel 1 | vel 13 | vel 52 | vel 100 |
+/// |---|---|---|---|---|
+/// | 0.0 | 0 | 0 | 0 | 0 |
+/// | 0.4 | −12 | −11 | −7 | −2 |
+/// | 1.0 | −31 | −28 | −18 | −6 |
+///
+/// 0.4 halves the depth rather than removing it: the worst case a pad can produce is audible, and
+/// twelve dB of dynamics survive. Zero would be louder still and expressionless. `vel_sensitivity`
+/// puts the hardware's own response back.
+const DEFAULT_VEL_SENSITIVITY: f32 = 0.4;
+
 /// 24 PPQN, as the transport reports it.
 const TICKS_PER_BEAT: f64 = 24.0;
 
@@ -200,7 +221,10 @@ impl Instance {
     fn new(module_dir: &str) -> Self {
         let mut instance = Self {
             engine: Engine::new(DEFAULT_VOICES, SAMPLE_RATE),
-            params: HwParams::default(),
+            params: HwParams {
+                vel_sensitivity: DEFAULT_VEL_SENSITIVITY,
+                ..HwParams::default()
+            },
             fidelity: Fidelity::default(),
             tuning: Tuning {
                 // The CLAP build overrides the engine's default here for the reason the README

@@ -953,3 +953,40 @@ fn one_channels_bend_leaves_the_others_alone() {
 
     unsafe { (api.destroy_instance)(instance) }
 }
+
+#[test]
+fn a_light_pad_tap_is_audible_by_default() {
+    let api = api();
+    let (instance, _) = qt_instance(api, true);
+
+    // Move's pads, through an overtake tool that passes velocity straight through, routinely send
+    // single digits — the log from a real session had four notes at velocity 1 out of twenty-three.
+    // At the hardware's full velocity response those land 31 dB down, which reads as silence.
+    let level = |velocity: u8| -> f32 {
+        midi(api, instance, [0xB0 | QT_CHANNELS[0], 120, 0]);
+        render_peak(api, instance, 2);
+        midi(api, instance, [0x90 | QT_CHANNELS[0], 41, velocity]);
+        let peak = render_peak(api, instance, 64) as f32;
+        midi(api, instance, [0x80 | QT_CHANNELS[0], 41, 0]);
+        peak
+    };
+
+    let full = level(127);
+    let faintest = level(1);
+    assert!(full > 0.0 && faintest > 0.0);
+
+    let down = 20.0 * (faintest / full).log10();
+    assert!(
+        down > -14.0,
+        "the faintest a pad can send is {down:.1} dB down; the hardware's own response puts it \
+         at -31 and a Move reads that as the module being silent"
+    );
+
+    // Not flattened to nothing, either — velocity still has to mean something.
+    assert!(
+        down < -4.0,
+        "velocity stopped doing anything at all ({down:.1} dB)"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}

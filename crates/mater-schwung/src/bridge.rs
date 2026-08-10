@@ -494,7 +494,7 @@ const CHAIN_PARAMS: &str = concat!(
     r#"{"key":"note_mode","name":"Note Mode","type":"enum","options":["Pitch","Slice","Split"],"default":0},"#,
     r#"{"key":"slice_channel","name":"Slice Chan","type":"int","min":1,"max":16,"default":1},"#,
     r#"{"key":"level","name":"Level","type":"float","min":0,"max":1,"step":0.02,"default":0.5},"#,
-    r#"{"key":"vel_sensitivity","name":"Vel Sens","type":"float","min":0,"max":1,"step":0.05,"default":1},"#,
+    r#"{"key":"vel_sensitivity","name":"Vel Sens","type":"float","min":0,"max":1,"step":0.05,"default":0.4},"#,
     r#"{"key":"legato","name":"Legato","type":"enum","options":["Off","On"],"default":0},"#,
     r#"{"key":"repeat","name":"Repeat","type":"enum","options":["Off","On"],"default":1},"#,
     r#"{"key":"sync","name":"Sync","type":"enum","options":["Off","On"],"default":1},"#,

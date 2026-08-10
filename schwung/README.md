@@ -130,11 +130,31 @@ giving up on autosave.
 | **Phase 3** | Sample loading off the audio thread — see below. Formats beyond WAV. Browsing for a sample from the device rather than setting a path. |
 | **Phase 4** | Anything drawn. A waveform strip and loop handles in `ui_chain.js`, and the real editor as a `web_ui.html` Remote UI, which is where the loop points, slice divisions and playheads want to live. |
 
-Two departures from the CLAP build are deliberate rather than pending. **The MPE zone defaults
-off**, where the CLAP build defaults to the lower zone: a Move slot receives on one channel and
-forwards on one channel, so plain MIDI is the normal case and a zone would put a master channel
-where a Move track simply is one. MPE needs the slot set to Receive=All + Forward=THRU before it
-means anything at all. And **`voices` defaults to eight** rather than sixteen — see below.
+Three departures from the CLAP build are deliberate rather than pending.
+
+**The MPE zone defaults off**, where the CLAP build defaults to the lower zone: a Move slot
+receives on one channel and forwards on one channel, so plain MIDI is the normal case and a zone
+would put a master channel where a Move track simply is one. MPE needs the slot set to Receive=All
++ Forward=THRU before it means anything at all. `mpe_enabled` turns it on without naming a zone,
+which is what `quartertone` and anything else driving a slot generically will set.
+
+**`voices` defaults to eight** rather than sixteen — see below.
+
+**`vel_sensitivity` defaults to 0.4** rather than the hardware's full response. The firmware's
+envelope steps a 38-entry *dB* table and velocity decides how far down it starts, which is far
+steeper than the synths a Move user arrives from. Measured on a device, at full response a note at
+velocity 1 lands 31 dB below one at 127 — and Move's pads, through an overtake tool that passes
+velocity through, send single digits routinely (a real session's log had four notes at velocity 1
+out of twenty-three). The module reads as silent.
+
+| Vel Sens | vel 1 | vel 13 | vel 52 | vel 100 |
+|---|---|---|---|---|
+| 0.0 | 0 | 0 | 0 | 0 |
+| 0.4 | −12 | −11 | −7 | −2 |
+| 1.0 | −31 | −28 | −18 | −6 |
+
+0.4 halves the depth rather than removing it: the worst case a pad can send is audible and twelve
+dB of dynamics survive. Set it to 1.0 for the instrument's own response, or 0 to ignore velocity.
 
 ## Two things to know before changing anything here
 
