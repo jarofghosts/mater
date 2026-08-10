@@ -212,6 +212,10 @@ pub fn set(inst: &mut Instance, key: &str, val: &str) {
             inst.sync_mpe();
         }
 
+        // Not a zone of its own: the synth-agnostic switch a tool sets when it wants MPE and has
+        // no opinion about which zone. See `Instance::set_mpe_enabled`.
+        "mpe_enabled" => inst.set_mpe_enabled(flag(val)),
+
         "hardware_cc_map" => inst.hardware_cc_map = flag(val),
 
         "voices" => {
@@ -347,6 +351,12 @@ pub fn get<'a>(inst: &'a Instance, key: &str, scratch: &'a mut Scratch) -> Optio
         // `mpe_active` is the zone in force rather than the one asked for: inside a split it is
         // always Off. That is what the CLAP editor greys the MPE controls out on, and it is the
         // only way a UI can tell the difference without reimplementing the rule.
+        // Whether MPE is in force at all, for a caller that set `mpe_enabled` and wants it back.
+        "mpe_enabled" => write!(
+            scratch,
+            "{}",
+            (inst.effective_mpe_zone() != MpeZone::Off) as u8
+        ),
         "mpe_active" => write!(
             scratch,
             "{}",

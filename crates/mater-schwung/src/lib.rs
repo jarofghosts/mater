@@ -160,6 +160,8 @@ pub struct Instance {
     pub bend_range: f32,
     /// Whether RPN 0 may override either range.
     pub follow_rpn: bool,
+    /// The zone `mpe_enabled` displaced, so turning it back off gives back what was there.
+    mpe_zone_restore: Option<MpeZone>,
 
     /// Whether the detected root is used, so reloading a sample re-applies the choice.
     pub match_input_pitch: bool,
@@ -221,6 +223,7 @@ impl Instance {
             mpe_bend_range: granny_core::mpe::DEFAULT_MEMBER_BEND_RANGE,
             bend_range: granny_core::mpe::DEFAULT_MASTER_BEND_RANGE,
             follow_rpn: true,
+            mpe_zone_restore: None,
             match_input_pitch: true,
             root_adjust: 0.0,
             hardware_cc_map: false,
@@ -410,6 +413,33 @@ impl Instance {
             _ => NoteMode::Tuned,
         };
         // A split changes whether the MPE zone may exist at all.
+        self.sync_mpe();
+    }
+
+    /// Turn MPE on or off without naming a zone.
+    ///
+    /// `mpe_enabled` is what a caller that does not know which synth is loaded sets. Schwung's
+    /// `quartertone` overtake tool puts a slot into MPE this way — `slot:receive_channel=0`,
+    /// `slot:forward_channel=-2`, `synth:mpe_enabled=1` — before it starts sending one channel and
+    /// one bend per note. Without this key the zone stayed off, every bend was read as global at
+    /// the plain-MIDI range, and twelve independently-tuned voices came out as one.
+    ///
+    /// It has no zone to offer, so enabling picks the lower one: `quartertone` allocates channels
+    /// 5–16 and never touches channel 1, so the lower zone's master sits unused and every note
+    /// lands on a member channel.
+    ///
+    /// Disabling gives back the zone that was displaced rather than forcing Off, so a tool that
+    /// flips this on entry and off on exit leaves a user who had chosen Upper still on Upper.
+    pub fn set_mpe_enabled(&mut self, on: bool) {
+        if on {
+            // Already in a zone: that is the user's own choice, and there is nothing to enable.
+            if self.mpe_zone == MpeZone::Off {
+                self.mpe_zone_restore = Some(self.mpe_zone);
+                self.mpe_zone = MpeZone::Lower;
+            }
+        } else if let Some(previous) = self.mpe_zone_restore.take() {
+            self.mpe_zone = previous;
+        }
         self.sync_mpe();
     }
 

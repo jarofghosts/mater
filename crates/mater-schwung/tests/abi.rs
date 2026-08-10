@@ -733,3 +733,223 @@ fn a_blob_with_no_opinion_on_the_sample_leaves_it_loaded() {
     unsafe { (api.destroy_instance)(instance) }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- driving the module the way Schwung's `quartertone` overtake tool does ------------------------
+
+/// `quartertone` allocates one MIDI channel per sounding note, from channels 5–16 (0-based 4–15),
+/// and never uses channel 1. See `src/modules/overtake/quartertone/tuning.mjs`.
+const QT_CHANNELS: [u8; 12] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+/// MPE's spec default, which is what it speaks and announces over RPN 0.
+const QT_BEND_RANGE: f32 = 48.0;
+
+/// `bendValue` from `tuning.mjs`, transcribed: cents into a 14-bit bend against a range.
+fn qt_bend_value(cents: f32, range_semis: f32) -> u16 {
+    let span = range_semis * 100.0;
+    let v = 8192.0 + (cents / span * 8192.0).round();
+    v.clamp(0.0, 16383.0) as u16
+}
+
+/// The six CCs `rpnBendRangePackets` emits: select RPN 0, set it, then null the selection.
+fn qt_announce_bend_range(api: &PluginApiV2, inst: *mut c_void, channel: u8, semis: u8) {
+    for (cc, val) in [
+        (101u8, 0u8),
+        (100, 0),
+        (6, semis),
+        (38, 0),
+        (101, 127),
+        (100, 127),
+    ] {
+        midi(api, inst, [0xB0 | channel, cc, val]);
+    }
+}
+
+/// Bend first, then the note — the order `voices.mjs` sends them in, so the voice is allocated
+/// already in tune rather than snapping there afterwards.
+fn qt_note_on(api: &PluginApiV2, inst: *mut c_void, channel: u8, note: u8, cents: f32) {
+    let bend = qt_bend_value(cents, QT_BEND_RANGE);
+    midi(
+        api,
+        inst,
+        [0xE0 | channel, (bend & 0x7F) as u8, (bend >> 7) as u8],
+    );
+    midi(api, inst, [0x90 | channel, note, 100]);
+}
+
+/// Render a second of audio and ask the engine's own YIN what pitch came out.
+fn sounding_hz(api: &PluginApiV2, instance: *mut c_void) -> f32 {
+    let mut mono = Vec::with_capacity(44100);
+    let mut out = vec![0i16; FRAMES * 2];
+    for _ in 0..344 {
+        unsafe { (api.render_block)(instance, out.as_mut_ptr(), FRAMES as i32) }
+        // Left channel, back into the 8-bit space `detect_root` reads.
+        for frame in out.chunks(2) {
+            mono.push(((frame[0] >> 8) as i32 + 128).clamp(0, 255) as u8);
+        }
+    }
+    granny_core::pitch::detect_root(&mono, 44100.0)
+        .map(|d| d.frequency)
+        .unwrap_or(0.0)
+}
+
+fn cents_between(a: f32, b: f32) -> f32 {
+    1200.0 * (a / b).log2()
+}
+
+/// Set an instance up the way the tool does, with a pitched sample loaded.
+///
+/// `use_rpn` mirrors the tool's own config toggle. It matters more than it looks: with RPN on the
+/// module learns the ±48 range from the wire and tracks correctly whether or not it ever heard
+/// `mpe_enabled`. With it off, the range has to come from the zone.
+fn qt_instance(api: &PluginApiV2, use_rpn: bool) -> (*mut c_void, PathBuf) {
+    let instance = create(api);
+    let path = write_test_wav("mater-abi-qt.wav");
+    set(api, instance, "sample_path", path.to_str().unwrap());
+
+    // A clean tone to measure: the hardware's sample-dropping transpose is most of the character
+    // but it is also broadband aliasing, and the granular engine off means one steady pitch.
+    set(api, instance, "interpolate", "1");
+    set(api, instance, "grain", "0");
+    set(api, instance, "voices", "12");
+
+    // What `setupSlotMpe` does. The slot-level keys belong to the shim; this is the synth's share.
+    set(api, instance, "mpe_enabled", "1");
+    if use_rpn {
+        for channel in QT_CHANNELS {
+            qt_announce_bend_range(api, instance, channel, QT_BEND_RANGE as u8);
+        }
+    }
+    (instance, path)
+}
+
+#[test]
+fn quartertone_can_put_the_module_into_mpe() {
+    let api = api();
+    let instance = create(api);
+
+    // The tool sets this without knowing which synth is loaded — it has no zone to offer.
+    assert_eq!(get(api, instance, "mpe_active").as_deref(), Some("0"));
+    set(api, instance, "mpe_enabled", "1");
+    assert_eq!(get(api, instance, "mpe_enabled").as_deref(), Some("1"));
+    assert_eq!(
+        get(api, instance, "mpe_active").as_deref(),
+        Some("1"),
+        "enabling has to reach the zone, or every bend is read as global"
+    );
+
+    // On exit it flips this back, and should hand back the zone it displaced.
+    set(api, instance, "mpe_enabled", "0");
+    assert_eq!(get(api, instance, "mpe_active").as_deref(), Some("0"));
+
+    // A user who chose Upper keeps it: the tool is restoring state it did not set.
+    set(api, instance, "mpe_zone", "2");
+    set(api, instance, "mpe_enabled", "1");
+    assert_eq!(
+        get(api, instance, "mpe_zone").as_deref(),
+        Some("2"),
+        "must not downgrade to Lower"
+    );
+    set(api, instance, "mpe_enabled", "0");
+    assert_eq!(
+        get(api, instance, "mpe_zone").as_deref(),
+        Some("2"),
+        "must not clobber the choice"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
+/// The case `mpe_enabled` is load-bearing for.
+///
+/// The tool's `useRpn` is a setting, and with it off nothing on the wire says what range is being
+/// spoken. Without a zone the module falls back to the plain-MIDI ±2, and a 50-cent bend sent
+/// against ±48 arrives as two cents — every interval a twenty-fourth of its intended size.
+#[test]
+fn a_quartertone_is_the_right_size_with_no_rpn_to_go_on() {
+    let api = api();
+    let (instance, _) = qt_instance(api, false);
+
+    qt_note_on(api, instance, QT_CHANNELS[0], 69, 0.0);
+    let natural = sounding_hz(api, instance);
+    midi(api, instance, [0x80 | QT_CHANNELS[0], 69, 0]);
+    midi(api, instance, [0xB0 | QT_CHANNELS[0], 120, 0]);
+
+    qt_note_on(api, instance, QT_CHANNELS[1], 69, 50.0);
+    let quartertone = sounding_hz(api, instance);
+
+    assert!(natural > 0.0 && quartertone > 0.0, "no pitch detected");
+    let offset = cents_between(quartertone, natural);
+    assert!(
+        (offset - 50.0).abs() < 8.0,
+        "expected ~50 cents, got {offset:.1}. Read against the plain-MIDI ±2 range instead of \
+         MPE's ±48, a quarter tone arrives as about two cents."
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
+/// The same with RPN on, which is the tool's default.
+///
+/// This one passes with or without `mpe_enabled`: the RPN announcement sets the range directly,
+/// and the per-channel bends are kept per channel whether or not a zone is configured. Kept as
+/// coverage of the path most people will actually be on, not as a guard on the zone.
+#[test]
+fn a_quartertone_sounds_a_quarter_tone_sharp() {
+    let api = api();
+    let (instance, _) = qt_instance(api, true);
+
+    // Note 69 with no offset, then the same note a quarter tone up — the whole point of the tool.
+    qt_note_on(api, instance, QT_CHANNELS[0], 69, 0.0);
+    let natural = sounding_hz(api, instance);
+    midi(api, instance, [0x80 | QT_CHANNELS[0], 69, 0]);
+    midi(api, instance, [0xB0 | QT_CHANNELS[0], 120, 0]);
+
+    qt_note_on(api, instance, QT_CHANNELS[1], 69, 50.0);
+    let quartertone = sounding_hz(api, instance);
+
+    assert!(
+        natural > 0.0 && quartertone > 0.0,
+        "no pitch detected: {natural} / {quartertone}"
+    );
+    let offset = cents_between(quartertone, natural);
+    assert!(
+        (offset - 50.0).abs() < 8.0,
+        "expected ~50 cents, got {offset:.1} ({natural:.1} Hz -> {quartertone:.1} Hz). \
+         Read against the plain-MIDI ±2 range instead of MPE's ±48 this lands near 1200."
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
+#[test]
+fn one_channels_bend_leaves_the_others_alone() {
+    let api = api();
+    let (instance, _) = qt_instance(api, true);
+
+    // Per-channel isolation, which holds with or without a zone: a bend is stored against its own
+    // channel and every voice is refreshed from the channel its own note arrived on, rather than
+    // having the incoming value applied to it. Worth pinning precisely because it is not obvious
+    // from the zone-off `Target::All` that it would.
+    qt_note_on(api, instance, QT_CHANNELS[0], 69, 0.0);
+    let before = sounding_hz(api, instance);
+
+    // A hard bend on a channel that is not sounding.
+    let bend = qt_bend_value(600.0, QT_BEND_RANGE);
+    midi(
+        api,
+        instance,
+        [
+            0xE0 | QT_CHANNELS[5],
+            (bend & 0x7F) as u8,
+            (bend >> 7) as u8,
+        ],
+    );
+    let after = sounding_hz(api, instance);
+
+    let drift = cents_between(after, before).abs();
+    assert!(
+        drift < 8.0,
+        "a bend on another channel moved this note by {drift:.1} cents"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
