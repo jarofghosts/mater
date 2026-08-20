@@ -459,11 +459,11 @@ fn flag(val: &str) -> bool {
 macro_rules! mod_slot_params {
     ($prefix:literal, $label:literal) => {
         concat!(
-            r#"{"key":""#, $prefix, r#"_source","name":""#, $label, r#" Src","type":"enum","#,
-            r#""options":["None","Pressure","Slide","Velocity","Bend","Random"],"default":0},"#,
-            r#"{"key":""#, $prefix, r#"_dest","name":""#, $label, r#" Dest","type":"enum","#,
-            r#""options":["None","Rate","Crush","Attack","Release","Grain","Shift","Start","End","Level","Pan"],"default":0},"#,
-            r#"{"key":""#, $prefix, r#"_depth","name":""#, $label, r#" Depth","type":"float","min":-1,"max":1,"step":0.05,"default":0},"#,
+            r#"{"key":""#, $prefix, r#"_source","name":""#, $label, r#" src","type":"enum","#,
+            r#""options":["none","pressure","slide","velocity","bend","random"],"default":0},"#,
+            r#"{"key":""#, $prefix, r#"_dest","name":""#, $label, r#" dest","type":"enum","#,
+            r#""options":["none","rate","crush","attack","release","grain","shift","start","end","level","pan"],"default":0},"#,
+            r#"{"key":""#, $prefix, r#"_depth","name":""#, $label, r#" depth","type":"float","min":-1,"max":1,"step":0.05,"default":0},"#,
         )
     };
 }
@@ -477,7 +477,7 @@ macro_rules! mod_slot_params {
 ///
 /// `module.json` keeps its copy for the module manager and the standalone host. A test holds
 /// the two to being the same JSON.
-const UI_HIERARCHY: &str = r#"{"levels":{"root":{"label":"mater","knobs":["rate","crush","attack","release","grain","shift","start","end"],"params":[{"level":"sample","label":"Sample..."},{"key":"rate","label":"Rate"},{"key":"crush","label":"Crush"},{"key":"attack","label":"Attack"},{"key":"release","label":"Release"},{"key":"grain","label":"Grain Size"},{"key":"shift","label":"Shift"},{"key":"start","label":"Start"},{"key":"end","label":"End"},{"key":"note_mode","label":"Note Mode"},{"key":"slice_channel","label":"Slice Chan"},{"key":"level","label":"Level"},{"level":"settings","label":"Settings"},{"level":"tuning","label":"Tuning"},{"level":"mpe","label":"MPE"},{"level":"mod_matrix","label":"Mod Matrix"},{"level":"fidelity","label":"Fidelity"}]},"settings":{"label":"Settings","knobs":["legato","repeat","sync","random_shift"],"params":[{"key":"legato","label":"Legato"},{"key":"repeat","label":"Repeat"},{"key":"sync","label":"Sync"},{"key":"random_shift","label":"Random Shift"},{"key":"hold","label":"Hold"},{"key":"vel_sensitivity","label":"Vel Sens"},{"key":"voices","label":"Voices"},{"key":"hardware_cc_map","label":"HW CC Map"}]},"tuning":{"label":"Tuning","knobs":["match_input_pitch","root_adjust","pitch_table","snap"],"params":[{"key":"match_input_pitch","label":"Match Pitch"},{"key":"root_adjust","label":"Root Adjust"},{"key":"pitch_table","label":"Pitch Table"},{"key":"snap","label":"Snap"}]},"mpe":{"label":"MPE","knobs":["mpe_zone","mpe_bend_range","bend_range","follow_rpn"],"params":[{"key":"mpe_zone","label":"Zone"},{"key":"mpe_bend_range","label":"MPE Bend"},{"key":"bend_range","label":"MIDI Bend"},{"key":"follow_rpn","label":"Follow RPN 0"}]},"mod_matrix":{"label":"Mod Matrix","knobs":["mod1_source","mod1_dest","mod1_depth","mod2_depth"],"params":[{"key":"mod1_source","label":"1 Source"},{"key":"mod1_dest","label":"1 Dest"},{"key":"mod1_depth","label":"1 Depth"},{"key":"mod2_source","label":"2 Source"},{"key":"mod2_dest","label":"2 Dest"},{"key":"mod2_depth","label":"2 Depth"},{"key":"mod3_source","label":"3 Source"},{"key":"mod3_dest","label":"3 Dest"},{"key":"mod3_depth","label":"3 Depth"}]},"fidelity":{"label":"Fidelity","knobs":["curve_mode","interpolate","quantize_seeks","grain_fade_ms"],"params":[{"key":"curve_mode","label":"Curve Maps"},{"key":"interpolate","label":"Interpolate"},{"key":"quantize_seeks","label":"Block Seeks"},{"key":"grain_fade_ms","label":"Grain Fade"}]},"sample":{"label":"Sample","items_param":"sample_list","select_param":"sample_index","navigate_to":"root"}}}"#;
+const UI_HIERARCHY: &str = r#"{"levels":{"root":{"label":"mater","knobs":["rate","crush","attack","release","grain","shift","start","end"],"params":[{"level":"sample","label":"sample..."},{"key":"rate","label":"rate"},{"key":"crush","label":"crush"},{"key":"attack","label":"attack"},{"key":"release","label":"release"},{"key":"grain","label":"grain size"},{"key":"shift","label":"shift"},{"key":"start","label":"start"},{"key":"end","label":"end"},{"key":"note_mode","label":"note mode"},{"key":"slice_channel","label":"slice chan"},{"key":"level","label":"level"},{"level":"settings","label":"settings"},{"level":"tuning","label":"tuning"},{"level":"mpe","label":"mpe"},{"level":"mod_matrix","label":"mod matrix"},{"level":"fidelity","label":"fidelity"}]},"settings":{"label":"settings","knobs":["legato","repeat","sync","random_shift"],"params":[{"key":"legato","label":"legato"},{"key":"repeat","label":"repeat"},{"key":"sync","label":"sync"},{"key":"random_shift","label":"random shift"},{"key":"hold","label":"hold"},{"key":"vel_sensitivity","label":"vel sens"},{"key":"voices","label":"voices"},{"key":"hardware_cc_map","label":"hw cc map"}]},"tuning":{"label":"tuning","knobs":["match_input_pitch","root_adjust","pitch_table","snap"],"params":[{"key":"match_input_pitch","label":"match pitch"},{"key":"root_adjust","label":"root adjust"},{"key":"pitch_table","label":"pitch table"},{"key":"snap","label":"snap"}]},"mpe":{"label":"mpe","knobs":["mpe_zone","mpe_bend_range","bend_range","follow_rpn"],"params":[{"key":"mpe_zone","label":"zone"},{"key":"mpe_bend_range","label":"mpe bend"},{"key":"bend_range","label":"midi bend"},{"key":"follow_rpn","label":"follow rpn 0"}]},"mod_matrix":{"label":"mod matrix","knobs":["mod1_source","mod1_dest","mod1_depth","mod2_depth"],"params":[{"key":"mod1_source","label":"1 source"},{"key":"mod1_dest","label":"1 dest"},{"key":"mod1_depth","label":"1 depth"},{"key":"mod2_source","label":"2 source"},{"key":"mod2_dest","label":"2 dest"},{"key":"mod2_depth","label":"2 depth"},{"key":"mod3_source","label":"3 source"},{"key":"mod3_dest","label":"3 dest"},{"key":"mod3_depth","label":"3 depth"}]},"fidelity":{"label":"fidelity","knobs":["curve_mode","interpolate","quantize_seeks","grain_fade_ms"],"params":[{"key":"curve_mode","label":"curve maps"},{"key":"interpolate","label":"interpolate"},{"key":"quantize_seeks","label":"block seeks"},{"key":"grain_fade_ms","label":"grain fade"}]},"sample":{"label":"sample","items_param":"sample_list","select_param":"sample_index","navigate_to":"root"}}}"#;
 
 /// Ranges, steps and enum options for the Shadow UI. Order does not matter here — `ui_hierarchy`
 /// in `module.json` decides what appears where.
@@ -490,43 +490,43 @@ const CHAIN_PARAMS: &str = concat!(
     // turn moving 2 units — just under the 2.4 that `value_to_sample_rate` needs to change the
     // DAC rate at all, so nothing below the curve's own resolution is lost. `display_format`
     // keeps the row reading "877" rather than "877.00"; `set_param` already took floats.
-    r#"{"key":"rate","name":"Rate","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":877},"#,
-    r#"{"key":"crush","name":"Crush","type":"int","min":0,"max":127,"default":0},"#,
-    r#"{"key":"attack","name":"Attack","type":"int","min":0,"max":127,"default":0},"#,
-    r#"{"key":"release","name":"Release","type":"int","min":0,"max":127,"default":0},"#,
-    r#"{"key":"grain","name":"Grain Size","type":"int","min":0,"max":127,"default":0},"#,
-    r#"{"key":"shift","name":"Shift","type":"int","min":0,"max":255,"default":128},"#,
+    r#"{"key":"rate","name":"rate","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":877},"#,
+    r#"{"key":"crush","name":"crush","type":"int","min":0,"max":127,"default":0},"#,
+    r#"{"key":"attack","name":"attack","type":"int","min":0,"max":127,"default":0},"#,
+    r#"{"key":"release","name":"release","type":"int","min":0,"max":127,"default":0},"#,
+    r#"{"key":"grain","name":"grain size","type":"int","min":0,"max":127,"default":0},"#,
+    r#"{"key":"shift","name":"shift","type":"int","min":0,"max":255,"default":128},"#,
     // Start and end are the same sweep and take the same treatment. Every unit here is a real
     // granule of the file rather than a rounding error, so the slow turn's 2 units stay useful,
     // and the firmware refuses a loop shorter than ten granules anyway.
-    r#"{"key":"start","name":"Start","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":0},"#,
-    r#"{"key":"end","name":"End","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":1022},"#,
-    r#"{"key":"note_mode","name":"Note Mode","type":"enum","options":["Pitch","Slice","Split"],"default":0},"#,
-    r#"{"key":"slice_channel","name":"Slice Chan","type":"int","min":1,"max":16,"default":1},"#,
-    r#"{"key":"level","name":"Level","type":"float","min":0,"max":1,"step":0.02,"default":0.5},"#,
-    r#"{"key":"vel_sensitivity","name":"Vel Sens","type":"float","min":0,"max":1,"step":0.05,"default":0.4},"#,
-    r#"{"key":"legato","name":"Legato","type":"enum","options":["Off","On"],"default":0},"#,
-    r#"{"key":"repeat","name":"Repeat","type":"enum","options":["Off","On"],"default":1},"#,
-    r#"{"key":"sync","name":"Sync","type":"enum","options":["Off","On"],"default":1},"#,
-    r#"{"key":"random_shift","name":"Random Shift","type":"enum","options":["Off","On"],"default":0},"#,
-    r#"{"key":"hold","name":"Hold","type":"enum","options":["Off","On"],"default":0},"#,
-    r#"{"key":"voices","name":"Voices","type":"int","min":1,"max":16,"default":8},"#,
-    r#"{"key":"pitch_table","name":"Pitch Table","type":"enum","options":["Equal","Hardware"],"default":0},"#,
-    r#"{"key":"snap","name":"Snap","type":"enum","options":["Off","24-EDO","12-EDO"],"default":0},"#,
-    r#"{"key":"match_input_pitch","name":"Match Pitch","type":"enum","options":["Off","On"],"default":1},"#,
-    r#"{"key":"root_adjust","name":"Root Adjust","type":"int","min":-2400,"max":2400,"unit":"c","default":0},"#,
-    r#"{"key":"mpe_zone","name":"MPE Zone","type":"enum","options":["Off","Lower","Upper"],"default":0},"#,
-    r#"{"key":"mpe_bend_range","name":"MPE Bend","type":"int","min":0,"max":48,"unit":"st","default":48},"#,
-    r#"{"key":"bend_range","name":"MIDI Bend","type":"int","min":0,"max":48,"unit":"st","default":2},"#,
-    r#"{"key":"follow_rpn","name":"Follow RPN 0","type":"enum","options":["Off","On"],"default":1},"#,
-    r#"{"key":"hardware_cc_map","name":"HW CC Map","type":"enum","options":["Off","On"],"default":0},"#,
-    mod_slot_params!("mod1", "Mod 1"),
-    mod_slot_params!("mod2", "Mod 2"),
-    mod_slot_params!("mod3", "Mod 3"),
-    r#"{"key":"curve_mode","name":"Curve Maps","type":"enum","options":["Hardware","Extended"],"default":0},"#,
-    r#"{"key":"interpolate","name":"Interpolate","type":"enum","options":["Off","On"],"default":0},"#,
-    r#"{"key":"quantize_seeks","name":"Block Seeks","type":"enum","options":["Off","On"],"default":1},"#,
-    r#"{"key":"grain_fade_ms","name":"Grain Fade","type":"float","min":0,"max":20,"step":0.5,"unit":"ms","default":0}"#,
+    r#"{"key":"start","name":"start","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":0},"#,
+    r#"{"key":"end","name":"end","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":1022},"#,
+    r#"{"key":"note_mode","name":"note mode","type":"enum","options":["pitch","slice","split"],"default":0},"#,
+    r#"{"key":"slice_channel","name":"slice chan","type":"int","min":1,"max":16,"default":1},"#,
+    r#"{"key":"level","name":"level","type":"float","min":0,"max":1,"step":0.02,"default":0.5},"#,
+    r#"{"key":"vel_sensitivity","name":"vel sens","type":"float","min":0,"max":1,"step":0.05,"default":0.4},"#,
+    r#"{"key":"legato","name":"legato","type":"enum","options":["off","on"],"default":0},"#,
+    r#"{"key":"repeat","name":"repeat","type":"enum","options":["off","on"],"default":1},"#,
+    r#"{"key":"sync","name":"sync","type":"enum","options":["off","on"],"default":1},"#,
+    r#"{"key":"random_shift","name":"random shift","type":"enum","options":["off","on"],"default":0},"#,
+    r#"{"key":"hold","name":"hold","type":"enum","options":["off","on"],"default":0},"#,
+    r#"{"key":"voices","name":"voices","type":"int","min":1,"max":16,"default":8},"#,
+    r#"{"key":"pitch_table","name":"pitch table","type":"enum","options":["equal","hardware"],"default":0},"#,
+    r#"{"key":"snap","name":"snap","type":"enum","options":["off","24-edo","12-edo"],"default":0},"#,
+    r#"{"key":"match_input_pitch","name":"match pitch","type":"enum","options":["off","on"],"default":1},"#,
+    r#"{"key":"root_adjust","name":"root adjust","type":"int","min":-2400,"max":2400,"unit":"c","default":0},"#,
+    r#"{"key":"mpe_zone","name":"mpe zone","type":"enum","options":["off","lower","upper"],"default":0},"#,
+    r#"{"key":"mpe_bend_range","name":"mpe bend","type":"int","min":0,"max":48,"unit":"st","default":48},"#,
+    r#"{"key":"bend_range","name":"midi bend","type":"int","min":0,"max":48,"unit":"st","default":2},"#,
+    r#"{"key":"follow_rpn","name":"follow rpn 0","type":"enum","options":["off","on"],"default":1},"#,
+    r#"{"key":"hardware_cc_map","name":"hw cc map","type":"enum","options":["off","on"],"default":0},"#,
+    mod_slot_params!("mod1", "mod 1"),
+    mod_slot_params!("mod2", "mod 2"),
+    mod_slot_params!("mod3", "mod 3"),
+    r#"{"key":"curve_mode","name":"curve maps","type":"enum","options":["hardware","extended"],"default":0},"#,
+    r#"{"key":"interpolate","name":"interpolate","type":"enum","options":["off","on"],"default":0},"#,
+    r#"{"key":"quantize_seeks","name":"block seeks","type":"enum","options":["off","on"],"default":1},"#,
+    r#"{"key":"grain_fade_ms","name":"grain fade","type":"float","min":0,"max":20,"step":0.5,"unit":"ms","default":0}"#,
     "]"
 );
 

@@ -74,7 +74,7 @@ schwung-manager at `http://move.local:7700` from a `release.json` on the repo's 
 
 ## What it does
 
-- **A sample browser**, `Sample...` at the top of the menu. It walks the module's own directory
+- **A sample browser**, `sample...` at the top of the menu. It walks the module's own directory
   and `UserLibrary/{Samples,Recordings}` — where Move keeps recordings and where Schwung's
   resampler and skipback write — and offers what it finds, nested paths labelled by their path and
   the loaded one marked. Setting `sample_path` directly still works; the browser is what makes it
@@ -90,7 +90,7 @@ schwung-manager at `http://move.local:7700` from a `release.json` on the repo's 
 - **The eight knobs** sit on the eight physical encoders in the firmware's order, in the firmware's
   own integer ranges. Below them are the setting bits, the tuning controls, the MPE zone, the
   three-slot mod matrix and the fidelity switches.
-- **Note Mode**, including `Split by channel` — one channel picking slices while the rest play in
+- **Note mode**, including `split` — one channel picking slices while the rest play in
   tune, out of the same file. A split forces the MPE zone off, because the two cannot both own the
   channel number; `mpe_active` reports the zone actually in force so a UI can grey the controls.
 - **Scala** — load a `.scl` and optional `.kbm` by path. The text, not the path, goes into the
