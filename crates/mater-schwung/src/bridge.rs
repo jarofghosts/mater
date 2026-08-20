@@ -483,14 +483,24 @@ const UI_HIERARCHY: &str = r#"{"levels":{"root":{"label":"mater","knobs":["rate"
 /// in `module.json` decides what appears where.
 const CHAIN_PARAMS: &str = concat!(
     "[",
-    r#"{"key":"rate","name":"Rate","type":"int","min":0,"max":1023,"default":877},"#,
+    // Float, not int, and that is the whole point: `knob_engine.mjs` only reads `step` on the
+    // float path. Its int path accumulates detents and emits one unit once the accumulator
+    // reaches the acceleration divisor, so an int crosses this range in 4089 detents at a fast
+    // sweep no matter what step it declares. 32 puts the sweep at 125 and still leaves a slow
+    // turn moving 2 units — just under the 2.4 that `value_to_sample_rate` needs to change the
+    // DAC rate at all, so nothing below the curve's own resolution is lost. `display_format`
+    // keeps the row reading "877" rather than "877.00"; `set_param` already took floats.
+    r#"{"key":"rate","name":"Rate","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":877},"#,
     r#"{"key":"crush","name":"Crush","type":"int","min":0,"max":127,"default":0},"#,
     r#"{"key":"attack","name":"Attack","type":"int","min":0,"max":127,"default":0},"#,
     r#"{"key":"release","name":"Release","type":"int","min":0,"max":127,"default":0},"#,
     r#"{"key":"grain","name":"Grain Size","type":"int","min":0,"max":127,"default":0},"#,
     r#"{"key":"shift","name":"Shift","type":"int","min":0,"max":255,"default":128},"#,
-    r#"{"key":"start","name":"Start","type":"int","min":0,"max":1023,"default":0},"#,
-    r#"{"key":"end","name":"End","type":"int","min":0,"max":1023,"default":1022},"#,
+    // Start and end are the same sweep and take the same treatment. Every unit here is a real
+    // granule of the file rather than a rounding error, so the slow turn's 2 units stay useful,
+    // and the firmware refuses a loop shorter than ten granules anyway.
+    r#"{"key":"start","name":"Start","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":0},"#,
+    r#"{"key":"end","name":"End","type":"float","min":0,"max":1023,"step":32,"display_format":".0f","default":1022},"#,
     r#"{"key":"note_mode","name":"Note Mode","type":"enum","options":["Pitch","Slice","Split"],"default":0},"#,
     r#"{"key":"slice_channel","name":"Slice Chan","type":"int","min":1,"max":16,"default":1},"#,
     r#"{"key":"level","name":"Level","type":"float","min":0,"max":1,"step":0.02,"default":0.5},"#,

@@ -167,6 +167,34 @@ fn parameters_round_trip_through_the_string_interface() {
     unsafe { (api.destroy_instance)(instance) }
 }
 
+/// The three ten-bit knobs are declared `float` so the Shadow UI's knob engine will honour their
+/// step — its int path ignores `step` entirely and crawls one unit per few detents. The cost is
+/// that `formatParamForSet` now sends them as decimals, so the wire format has to survive.
+#[test]
+fn the_ten_bit_knobs_take_the_decimals_the_ui_now_sends() {
+    let api = api();
+    let instance = create(api);
+
+    for (key, sent, expected) in [
+        ("rate", "877.000", "877"),
+        ("rate", "876.600", "877"),
+        ("start", "0.000", "0"),
+        ("end", "1022.400", "1022"),
+        // Still clamped at the ends, decimals or not.
+        ("end", "1023.900", "1023"),
+        ("start", "-0.400", "0"),
+    ] {
+        set(api, instance, key, sent);
+        assert_eq!(
+            get(api, instance, key).as_deref(),
+            Some(expected),
+            "{key} {sent}"
+        );
+    }
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
 #[test]
 fn chain_params_covers_every_key_the_ui_can_reach() {
     let api = api();

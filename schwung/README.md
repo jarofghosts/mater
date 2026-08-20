@@ -187,6 +187,14 @@ minima, maxima and enum options from the `chain_params` JSON that `get_param` re
 in `module.json` says only which keys appear, in what order, and under which knob. Adding a
 parameter means touching both, but they can never disagree about a range.
 
+**A `step` on an `int` is dead metadata.** `shared/knob_engine.mjs` reads `step` on the float path
+only — `(step / divisor) * direction`. Its int path accumulates detents and emits a single unit
+once the accumulator reaches the acceleration divisor, which is 4 at a fast sweep and 16 at a slow
+one, so an int moves at most one unit per four detents whatever it declares. A 0..1023 int is 4089
+detents end to end. Anything that wants a real sweep is declared `float` with a step and a
+`display_format` of `".0f"` to keep it reading as a whole number; `set_param` then receives
+decimals on the wire, which `clamp_u16` already parses and rounds.
+
 ## Voices
 
 Eight, against the CLAP build's sixteen. Measured on a Move, rendering granular (`grain` 30,
