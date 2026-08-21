@@ -51,6 +51,10 @@ cp "$BUILT" "$STAGE/dsp.so"
 cp "$ROOT/schwung/module.json" "$STAGE/module.json"
 # A freshly-loaded slot with no sample is silent and gives no hint why, so one ships with it.
 cp "$ROOT/schwung/assets/default.wav" "$STAGE/default.wav"
+# 24-EDO, for playing quarter tones from a controller that sends one note number per quarter tone.
+# Shipped rather than left to the user because the module directory is a path `scala_path` can be
+# given directly, so having it here is what makes the tuning reachable without a file transfer.
+cp "$ROOT/schwung/assets/24edo.scl" "$STAGE/24edo.scl"
 aarch64-linux-gnu-strip "$STAGE/dsp.so" 2>/dev/null || true
 
 tar -czf "$ROOT/dist/$MODULE_ID-module.tar.gz" -C "$ROOT/dist" "$MODULE_ID"

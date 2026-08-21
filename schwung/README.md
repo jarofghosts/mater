@@ -94,7 +94,13 @@ schwung-manager at `http://move.local:7700` from a `release.json` on the repo's 
   tune, out of the same file. A split forces the MPE zone off, because the two cannot both own the
   channel number; `mpe_active` reports the zone actually in force so a UI can grey the controls.
 - **Scala** — load a `.scl` and optional `.kbm` by path. The text, not the path, goes into the
-  state blob, so a preset carries its own tuning.
+  state blob, so a preset carries its own tuning. `24edo.scl` ships alongside the default sample,
+  so `scala_path` can be pointed at the module's own directory to get quarter tones without
+  moving a file onto the device. Under the default keyboard mapping it puts A440 on note 69 and
+  makes every note number half a semitone, which is what a controller sending one note number per
+  quarter tone — a LinnStrument in note-number mode, say — already emits. `snap` reaches the same
+  grid from the other direction, quantising a continuous MPE pitch onto it rather than remapping
+  the note numbers, and the two are safe together because a 24-EDO scale already lands on it.
 - **The hardware CC map** — CC102–109 and CC1, off by default. Unlike the CLAP build these write
   the parameters directly and the displayed value follows: a Schwung module has no restriction on
   writing its own parameters from the audio thread, so the override table the CLAP build needs
