@@ -948,6 +948,37 @@ fn a_quartertone_sounds_a_quarter_tone_sharp() {
     unsafe { (api.destroy_instance)(instance) }
 }
 
+/// Snapping has to reach the rendered pitch, not only the note number the tuning computes.
+///
+/// `effective_note` applies it after the bend offset, which is what lets a controller whose bend
+/// does not land exactly on a scale step still play in tune. The unit tests cover that arithmetic;
+/// this covers whether it survives to the DAC, because a snap that is set and ignored looks exactly
+/// like a snap that is not set at all.
+#[test]
+fn snapping_reaches_the_rendered_pitch() {
+    let api = api();
+    let (instance, _) = qt_instance(api, false);
+    set(api, instance, "snap", "1");
+
+    qt_note_on(api, instance, QT_CHANNELS[0], 69, 0.0);
+    let natural = sounding_hz(api, instance);
+    midi(api, instance, [0x80 | QT_CHANNELS[0], 69, 0]);
+    midi(api, instance, [0xB0 | QT_CHANNELS[0], 120, 0]);
+
+    // Thirty cents is nowhere near a grid line, and nearer to fifty than to zero.
+    qt_note_on(api, instance, QT_CHANNELS[1], 69, 30.0);
+    let snapped = sounding_hz(api, instance);
+
+    assert!(natural > 0.0 && snapped > 0.0, "no pitch detected");
+    let offset = cents_between(snapped, natural);
+    assert!(
+        (offset - 50.0).abs() < 8.0,
+        "snap to 24-edo should pull a 30 cent bend onto the quarter tone, got {offset:.1}"
+    );
+
+    unsafe { (api.destroy_instance)(instance) }
+}
+
 #[test]
 fn one_channels_bend_leaves_the_others_alone() {
     let api = api();

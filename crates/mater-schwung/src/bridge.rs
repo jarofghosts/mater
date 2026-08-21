@@ -534,6 +534,66 @@ const CHAIN_PARAMS: &str = concat!(
 mod tests {
     use super::*;
 
+    /// The bend a LinnStrument sends for a quarter tone on a member channel, at bend range 48.
+    const QUARTERTONE_UNITS: i32 = 85;
+
+    /// Deliver a pitch bend the way `on_midi` would, on a member channel of the lower zone.
+    fn bend_member(inst: &mut Instance, offset_units: i32) -> f32 {
+        let raw = 8192 + offset_units;
+        crate::midi::handle(inst, &[0xE5, (raw & 0x7F) as u8, (raw >> 7) as u8]);
+        inst.mpe.bend_semitones_for(5)
+    }
+
+    /// A tuning parameter is only worth anything if it lands on the `Tuning` the render path reads.
+    /// `render_block` passes `&self.tuning` into the scene, so this is that same field.
+    #[test]
+    fn snap_reaches_the_tuning_the_render_path_uses() {
+        let mut inst = Instance::new("");
+        assert_eq!(inst.tuning.snap_divisions, None, "snap should start off");
+        set(&mut inst, "snap", "1");
+        assert_eq!(inst.tuning.snap_divisions, Some(24));
+        set(&mut inst, "snap", "0");
+        assert_eq!(inst.tuning.snap_divisions, None);
+    }
+
+    /// The MPE ranges have to reach `MpeState` too, or a bend is measured against the wrong scale
+    /// and a quarter tone comes out some other interval entirely.
+    #[test]
+    fn a_quartertone_bend_survives_the_parameter_plumbing() {
+        let mut inst = Instance::new("");
+        set(&mut inst, "mpe_zone", "1");
+        set(&mut inst, "mpe_bend_range", "48");
+        set(&mut inst, "follow_rpn", "0");
+        let semitones = bend_member(&mut inst, -QUARTERTONE_UNITS);
+        assert!(
+            (semitones + 0.5).abs() < 0.01,
+            "-{QUARTERTONE_UNITS} units at range 48 should be half a semitone down, got {semitones}"
+        );
+    }
+
+    /// Everything together, as a slot driven by a controller actually has it: the cell reports the
+    /// note number above it, bends down, and snapping puts it on the quarter tone exactly.
+    #[test]
+    fn a_quartertone_cell_lands_halfway_between_its_neighbours() {
+        let mut inst = Instance::new("");
+        set(&mut inst, "snap", "1");
+        set(&mut inst, "mpe_zone", "1");
+        set(&mut inst, "mpe_bend_range", "48");
+        set(&mut inst, "follow_rpn", "0");
+        let bend = bend_member(&mut inst, -QUARTERTONE_UNITS);
+        let below = inst.tuning.effective_note(60, 0.0).unwrap();
+        let cell = inst.tuning.effective_note(61, bend).unwrap();
+        let above = inst.tuning.effective_note(61, 0.0).unwrap();
+        assert!(
+            (cell - 60.5).abs() < 1e-4,
+            "the cell should sound at 60.5, got {cell}"
+        );
+        assert!(
+            (cell - below - 0.5).abs() < 1e-4 && (above - cell - 0.5).abs() < 1e-4,
+            "three adjacent cells should step half a semitone each: {below}, {cell}, {above}"
+        );
+    }
+
     /// Every key `chain_params` advertises, in the order it advertises them.
     fn advertised_keys() -> Vec<&'static str> {
         CHAIN_PARAMS
